@@ -27,6 +27,9 @@ const C = {
   grey2: '#C3CAD9',
 };
 
+// Year colours for monthly trend lines: two slate tones + a contrasting 2026.
+const YEAR_COLORS = { 2024: '#B4BCCD', 2025: '#5E6A93', 2026: '#D9663F' };
+
 const CAT_COLORS = {
   Baik: '#0F9D8A',
   Sedang: '#6B9B2E',
@@ -86,6 +89,11 @@ function fmt(v, d = 1) {
   return nf1.format(Number(v));
 }
 function fmtInt(v) { return fmt(v, 0); }
+function average(values) {
+  const clean = (values || []).filter((v) => v != null && !Number.isNaN(Number(v)));
+  if (!clean.length) return null;
+  return clean.reduce((a, v) => a + Number(v), 0) / clean.length;
+}
 function fmtRatio(v) { return fmt(v, 1).replace('-', '−'); }
 function fmtR(v) { return nf3.format(Number(v)).replace('-', '−'); }
 function esc(s) {
@@ -231,7 +239,7 @@ function initShell() {
   });
   stationSel.addEventListener('change', () => {
     state.station = stationSel.value || null;
-    if (state.station && state.page === 'ringkasan') state.page = 'wilayah';
+    if (!state.station && state.page === 'ringkasan') state.origin = null;
     render();
   });
   $('#btn-reset').addEventListener('click', () => {
@@ -291,6 +299,14 @@ function initShell() {
     }
   });
   $('#page').addEventListener('click', onPageClick);
+  $('#page').addEventListener('keydown', (e) => {
+    const kpi = e.target.closest('[data-kpi]');
+    if (!kpi || e.target.closest('.info')) return;
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      kpiGo(kpi.dataset.kpi);
+    }
+  });
   initMobileChrome();
   initTip();
 }
@@ -367,7 +383,26 @@ function go(page) {
   renderBackChip();
 }
 
+// KPI cards are entry points: they hand the story to the page that explains it.
+function kpiGo(id) {
+  if (state.page !== 'ringkasan') return;
+  const dest = KPI_DEST[id];
+  if (!dest) return;
+  if (dest.station) {
+    const top = topRowsFull()[0];
+    const spec = top ? detailStation(top.id, { cta: 'wilayah' }) : null;
+    if (spec) openDetail(spec);
+    return;
+  }
+  go(dest.page);
+}
+
 function onPageClick(e) {
+  const kpi = e.target.closest('[data-kpi]');
+  if (kpi && !e.target.closest('.info')) {
+    kpiGo(kpi.dataset.kpi);
+    return;
+  }
   const nav = e.target.closest('[data-go]');
   if (nav) {
     e.preventDefault();
@@ -397,6 +432,10 @@ function onPageClick(e) {
     e.preventDefault();
     const a = act.dataset.action;
     if (a === 'export-station') exportStation();
+    if (a === 'compare-station') {
+      const spec = detailCompare();
+      if (spec) openDetail(spec);
+    }
     if (a === 'download-metrics') {
       const link = document.createElement('a');
       link.href = 'data/metrics.json';
@@ -514,6 +553,7 @@ function openDetail(spec) {
   $('#detail-kicker').textContent = spec.kicker;
   $('#detail-title').textContent = spec.title;
   $('#detail-body').innerHTML = spec.body;
+  panel.classList.toggle('is-wide', !!spec.wide);
   panel.classList.remove('closing');
   panel.hidden = false;
   $('#detail-scrim').hidden = false;
@@ -576,6 +616,36 @@ function detailBars(rows, opts = {}) {
     <span class="drow-track"><span style="width:${Math.max(2, (r.value || 0) / max * 100)}%;background:${r.color || C.navy}"></span></span>
     <span class="drow-value">${r.display || fmt(r.value, 1)}${opts.unit ? ` <small>${esc(opts.unit)}</small>` : ''}</span>
   </button>`).join('')}</div>`;
+}
+
+function detailIspuYear(year) {
+  const all = DATA.overview.ispu_year_pct || {};
+  const key = String(year);
+  const pct = all[key];
+  if (!pct) return null;
+  const prevKey = String(Number(year) - 1);
+  const prev = all[prevKey] || null;
+  const rows = CAT_ORDER.map((c) => {
+    const v = pct[c] || 0;
+    const d = prev ? v - (prev[c] || 0) : null;
+    return {
+      label: c,
+      value: v,
+      color: CAT_COLORS[c],
+      display: `${fmt(v, 1)}%${d == null ? '' : ` <small>${d >= 0 ? '+' : '−'}${fmt(Math.abs(d), 1)}</small>`}`,
+    };
+  });
+  const body = `
+    <div class="detail-block"><div class="detail-label">Komposisi ${esc(key)}</div>${detailStack(pct)}</div>
+    <div class="detail-block"><div class="detail-label">Per kategori · % hari-stasiun</div>${detailBars(rows)}</div>
+    ${prev ? `<div class="detail-note">Angka kecil = selisih terhadap ${esc(prevKey)} dalam poin persentase</div>` : ''}`;
+  return {
+    key: `ispu-year:${key}`,
+    kicker: 'Komposisi ISPU · semua stasiun',
+    title: key,
+    chip: key,
+    body,
+  };
 }
 
 function detailMonth(month, island) {
@@ -1029,13 +1099,14 @@ function detailMeteo(id) {
 function detailOutcome(key) {
   const o = (DATA.health.outcomes || []).find((x) => x.key === key);
   if (!o) return null;
-  const years = DATA.health.years || [];
+  const years = healthYears();
   const y = years[years.length - 1];
   if (!y) return null;
   const a = y.actual[key];
   const e = y.expected[key];
   const ex = y.excess[key];
   const totalResp = y.actual.resp || 0;
+  const scope = state.island === 'Semua' ? 'nasional' : state.island;
   const body = `
     ${detailMetrics([
       ['Aktual', fmtInt(a), 'kasus'],
@@ -1050,13 +1121,18 @@ function detailOutcome(key) {
       <div class="row"><span>Porsi dari respirasi</span><b>${totalResp ? `${fmt(a / totalResp * 100, 1)}%` : '—'}</b></div>
       <div class="row"><span>Jendela</span><b>${y.days} hari</b></div>
     </div>
-    <div class="detail-note">Estimasi asosiatif: aktual − expected, bukan klaim kausal</div>`;
+    <div class="detail-note">Estimasi asosiatif: aktual − expected, bukan klaim kausal</div>
+    <button class="primary-btn detail-cta" type="button" data-detail-go="kesehatan">Buka Kesehatan</button>`;
   return {
     key: `outcome:${key}`,
-    kicker: 'Observed vs expected · 1 Agu–14 Okt 2026',
+    kicker: `Observed vs expected · ${scope} · 1 Agu–14 Okt 2026`,
     title: o.label,
     chip: o.label,
     body,
+    after: (root) => {
+      const cta = root.querySelector('[data-detail-go]');
+      if (cta) cta.addEventListener('click', () => jumpTo('kesehatan'));
+    },
   };
 }
 
@@ -1390,15 +1466,24 @@ const ISLAND_COLORS = { Sumatera: '#D9663F', Jawa: '#182048', Kalimantan: '#E3A0
 const CAT_ORDER = ['Baik', 'Sedang', 'Tidak Sehat', 'Sangat Tidak Sehat', 'Berbahaya'];
 const DIURNAL_COLORS = { 'Clean/Regional': '#0F9D8A', Industrial: '#D9663F', 'Peatland/Forest': '#6B9B2E', 'Traffic/Roadside': '#182048', 'Urban Background': '#E3A008' };
 
-function overviewKpis() {
+function scopeStats() {
   const stats = DATA.overview.stats_window;
-  const scope = state.island === 'Semua' ? stats.all : (stats.by_island[state.island] || stats.all);
+  if (state.station && stats.by_station[state.station]) return stats.by_station[state.station];
+  if (state.island !== 'Semua') return stats.by_island[state.island] || stats.all;
+  return stats.all;
+}
+
+function overviewKpis() {
+  const scope = scopeStats();
   const cat = categoryFromPm(scope.mean);
   const top = topRowsFull();
-  const topStation = state.station ? DATA.stationsById.get(state.station) : top[0];
+  const topStation = state.station ? (DATA.stationsById.get(state.station) || top[0]) : top[0];
   const topLabel = topStation ? `${topStation.lower_bound ? '≥' : ''}${fmt(topStation.mean_2026 ?? scope.mean, 1)}` : '—';
   const health = healthYears()[2];
-  const scopeName = state.island === 'Semua' ? 'nasional' : state.island;
+  const scopedHealth = state.station ? healthStationExcess(state.station) : null;
+  const scopeName = state.station || (state.island === 'Semua' ? 'nasional' : state.island);
+  const resp = scopedHealth ? scopedHealth.resp : health.excess.resp;
+  const respDays = scopedHealth ? scopedHealth.days : health.days;
   return [
     {
       id: 'mean', label: 'Rata-rata PM2.5', value: scope.mean, unit: 'µg/m³',
@@ -1416,11 +1501,17 @@ function overviewKpis() {
       note: topStation ? `${topStation.id} · ${topStation.lower_bound ? '≥' : ''}${fmt(topStation.mean_2026, 1)} µg/m³ · 1 Agu–14 Okt 2026` : 'Tidak ada stasiun pada filter',
     },
     {
-      id: 'resp', label: 'Estimasi kelebihan respirasi', value: health.excess.resp, unit: 'kasus',
+      id: 'resp', label: 'Estimasi kelebihan respirasi', value: resp, unit: 'kasus',
       baseline: 'estimasi asosiatif', window: '1 Agu–14 Okt',
-      note: `${scopeName} · 1 Agu–14 Okt 2026 · ${health.days} hari · aktual − expected; bukan kausal`,
+      note: `${scopeName} · 1 Agu–14 Okt 2026 · ${respDays} hari · aktual − expected; bukan kausal`,
     },
   ];
+}
+
+function healthStationExcess(id) {
+  const r = (DATA.health.stations || []).find((s) => s.station === id);
+  if (!r) return null;
+  return { resp: r.resp, days: r.days, excess: r };
 }
 function topRowsFull() {
   const map = new Map(DATA.stations.stations.map((s) => [s.id, s]));
@@ -1444,12 +1535,29 @@ function kpiCard2(k) {
   const value = k.id === 'resp' ? fmtInt(k.value) : k.value;
   const est = k.id === 'resp';
   const valHtml = typeof value === 'number' ? fmt(value, 1) : value;
-  return `<div class="kpi" data-id="${k.id}">
+  const dest = KPI_DEST[k.id];
+  if (!dest) {
+    return `<div class="kpi" data-id="${k.id}">
+      <div class="kpi-top">${kpiIcon(k.id)}<div class="kpi-label">${k.label}</div><span class="info" tabindex="0" data-tip="${esc(k.note)}">i</span></div>
+      <div class="kpi-value-row"><span class="kpi-value${k.id === 'heaviest' ? ' small' : ''}">${valHtml}</span><span class="kpi-unit">${k.unit}</span></div>
+      <div class="kpi-bottom"><span class="kpi-base ${est ? 'est' : ''}">${k.baseline}</span>${k.window ? `<span class="kpi-window">${k.window}</span>` : ''}</div>
+    </div>`;
+  }
+  const destLabel = `Buka ${PAGE_NAMES[dest.page] || 'rincian'}`;
+  return `<div class="kpi is-link" data-id="${k.id}" data-kpi="${k.id}" role="link" tabindex="0" aria-label="${esc(`${k.label}: ${valHtml} ${k.unit || ''} — ${destLabel}`)}">
     <div class="kpi-top">${kpiIcon(k.id)}<div class="kpi-label">${k.label}</div><span class="info" tabindex="0" data-tip="${esc(k.note)}">i</span></div>
     <div class="kpi-value-row"><span class="kpi-value${k.id === 'heaviest' ? ' small' : ''}">${valHtml}</span><span class="kpi-unit">${k.unit}</span></div>
     <div class="kpi-bottom"><span class="kpi-base ${est ? 'est' : ''}">${k.baseline}</span>${k.window ? `<span class="kpi-window">${k.window}</span>` : ''}</div>
   </div>`;
 }
+
+// Each KPI hands the story off to the page that explains it (no narration needed).
+const KPI_DEST = {
+  mean: { page: 'waktu' },
+  above55: { page: 'waktu' },
+  heaviest: { station: true },
+  resp: { page: 'kesehatan' },
+};
 
 function round1(v) { return Math.round(v * 10) / 10; }
 
@@ -1476,29 +1584,58 @@ function defaultStationForIsland() {
 }
 
 function ispuLegendFull() {
-  return [...CAT_ORDER.map((k) => `<div class="row"><span class="sw" style="background:${CAT_COLORS[k]}"></span>${esc(k)}</div>`), '<div class="row"><span class="sw" style="background:#C3CAD9"></span>Tanpa data</div>'].join('');
+  const rows = [...CAT_ORDER.map((k) => `<div class="row"><span class="sw" style="background:${CAT_COLORS[k]}"></span>${esc(k)}</div>`), '<div class="row"><span class="sw" style="background:#C3CAD9"></span>Tanpa data</div>'];
+  return `<div class="map-legend-title">ISPU dominan</div>${rows.join('')}`;
 }
+function overviewPills() {
+  const dq = DATA.meta.data_quality;
+  const ratio = (DATA.overview.kpis || []).find((k) => k.id === 'national');
+  const blind = (DATA.network.blind_spots || []).length;
+  return `<span class="pill static" data-tip="Rata-rata nasional 2026 dibanding 2024 · ${esc(DATA.meta.periods.window)}">${fmtRatio(ratio ? ratio.ratio : null)}× 2024</span>
+    <span class="pill static" data-tip="Baris valid ${fmtInt(dq.valid_rows)} dari ${fmtInt(dq.raw_rows)} baris mentah">${fmt(dq.valid_overall_pct, 1)}% data layak</span>
+    <span class="pill warning" data-tip="${esc((DATA.network.blind_spots || []).join(' · '))}">${blind} wilayah tanpa stasiun</span>`;
+}
+
 function renderOverview() {
   const d = DATA.meta.data_quality;
   const meta = `${DATA.meta.periods.window} · ${d.stations} stasiun · ${d.provinces} provinsi · data hingga ${DATA.meta.periods.data_end}`;
   const kpis = overviewKpis().map(kpiCard2).join('');
-  const islandCompTitle = state.island === 'Semua' ? 'Komposisi ISPU per pulau' : `Komposisi ISPU · ${state.island}`;
-  return `${pageHead('Ringkasan', meta, `<span class="pill" data-tip="Angka kanonis metrics.json; jendela sebanding = 1–14 Sep + 1–14 Okt (28 hari).">metrics.json</span>`)}
+  const islandCompTitle = state.station
+    ? `Komposisi ISPU · ${state.station}`
+    : (state.island === 'Semua' ? 'Komposisi ISPU per pulau' : `Komposisi ISPU · ${state.island}`);
+  const trendTitle = state.station
+    ? `Tren ${state.station}`
+    : (state.island === 'Semua' ? 'Tren nasional' : `Tren ${state.island}`);
+  const trend = trendMeta();
+  return `${pageHead('Ringkasan', meta, overviewPills())}
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
-    <div class="grid-12">
-      ${card('Peta hotspot', 'ISPU dominan · 1 Agu–14 Okt 2026', `<div class="map" id="map-overview"></div><div class="map-legend" id="legend-overview"></div><div class="map-badge" id="badge-overview"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">klik titik</div>' })}
-      ${card(state.island === 'Semua' ? 'Tren nasional' : `Tren ${state.island}`, 'µg/m³ · bulanan', `<div class="chart" id="chart-trend"></div>`, { cls: 'span-7 h-320' })}
+    <div class="grid-55">
+      <section class="card map-card h-420">
+        <div class="card-head"><div class="card-title">Peta hotspot</div><div class="card-head-right"><div class="card-sub">ISPU dominan · 1 Agu–14 Okt 2026</div></div></div>
+        <div class="card-body"><div class="map" id="map-overview"></div><div class="map-legend" id="legend-overview"></div></div>
+      </section>
+      ${card(trendTitle, 'µg/m³ · bulanan · garis PP 55 & WHO 15', `<div class="chart" id="chart-trend"></div>`, { cls: 'h-420', right: `<div class="card-sub">P95 ${fmt(trend.p95, 1)} · Okt ${trend.partialDays} hari</div>` })}
     </div>
     <div class="grid-12">
-      ${card(islandCompTitle, '% hari-stasiun', `<div class="chart" id="chart-ispu-island"></div>` + ispuStackLegend(), { cls: 'span-5 h-280' })}
-      ${card('Komposisi ISPU per tahun', '% hari-stasiun', `<div class="chart" id="chart-ispu-year"></div>` + ispuStackLegend(), { cls: 'span-7 h-280' })}
+      ${card('Ranking pulau', 'µg/m³ · 1 Agu–14 Okt 2026', `<div class="chart" id="chart-rank-island"></div>`, { cls: 'span-3 h-320' })}
+      ${card('Siklus 24 jam', 'indeks % · 100 = rata-rata harian', `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320' })}
+      ${card('Observed vs expected', `kasus · ${healthYears()[2].days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual / expected</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Ranking 10 stasiun', 'µg/m³ · 1 Agu–14 Okt 2026', `<div class="chart" id="chart-rank-station"></div>`, { cls: 'span-7 h-280' })}
-      ${card('Ranking pulau', 'µg/m³ · 1 Agu–14 Okt 2026', `<div class="chart" id="chart-rank-island"></div>`, { cls: 'span-5 h-280' })}
+      ${card(islandCompTitle, '% hari-stasiun', `<div class="chart" id="chart-ispu-island"></div>` + ispuStackLegend(), { cls: 'span-6 h-280' })}
+      ${card('Perbandingan 5 kelas lokasi', 'baseline vs mean 2026 · µg/m³', `<div class="chart" id="chart-class"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">klik untuk rincian</div>' })}
     </div>
   </div>`;
+}
+
+function trendMeta() {
+  const rows = trendRows();
+  const last = rows.length ? rows[rows.length - 1] : null;
+  const partialDays = last && last.stations ? Math.round(last.days / last.stations) : null;
+  const st = state.station ? DATA.overview.stats_window.by_station[state.station] : null;
+  const scope = st || (state.island === 'Semua' ? DATA.overview.stats_window.all : (DATA.overview.stats_window.by_island[state.island] || DATA.overview.stats_window.all));
+  return { p95: scope.p95, partialDays };
 }
 function ispuStackLegend() {
   return `<div class="stack-legend">${CAT_ORDER.map((k) => `<span class="item"><span class="sw" style="background:${CAT_COLORS[k]}"></span>${esc(k)}</span>`).join('')}</div>`;
@@ -1525,20 +1662,25 @@ function afterOverview() {
       }
     },
     legend: ispuLegendFull(),
-    badge: 'ISPU dominan',
     labels: true,
     islands: false,
     zoom: true,
   });
-  const badge = $('#badge-overview');
-  if (badge) badge.textContent = 'ISPU dominan';
   makeMonthlyChart('chart-trend', trendRows(), {
     compact: true,
+    who15: true,
+    xInterval: 2,
     onPick: (m) => { const spec = detailMonth(m, state.island === 'Semua' ? null : state.island); if (spec) openDetail(spec); },
   });
-  const islandRows = state.island === 'Semua'
-    ? Object.entries(DATA.overview.ispu_haze26_pct).map(([name, v]) => ({ name, ...v }))
-    : Object.entries(DATA.overview.ispu_station_pct).filter(([id]) => { const s = DATA.stationsById.get(id); return s && s.island === state.island; }).map(([name, v]) => ({ name, ...v }));
+  const islandRows = state.station
+    ? (() => {
+      const st = DATA.stationsById.get(state.station);
+      if (!st) return [];
+      return [{ name: state.station, ...(DATA.overview.ispu_station_pct[state.station] || {}) }];
+    })()
+    : (state.island === 'Semua'
+      ? Object.entries(DATA.overview.ispu_haze26_pct).map(([name, v]) => ({ name, ...v }))
+      : Object.entries(DATA.overview.ispu_station_pct).filter(([id]) => { const s = DATA.stationsById.get(id); return s && s.island === state.island; }).map(([name, v]) => ({ name, ...v })));
   makeStackedComposition('chart-ispu-island', islandRows.sort((a, b) => (b['Berbahaya'] || 0) - (a['Berbahaya'] || 0)), {
     onPick: (name, cat) => {
       const spec = DATA.overview.ispu_haze26_pct[name] ? detailIslandCategory(name, cat) : null;
@@ -1557,27 +1699,21 @@ function afterOverview() {
       }
     },
   });
-  const yearRows = Object.entries(DATA.overview.ispu_year_pct).map(([name, v]) => ({ name, ...v }));
-  makeStackedComposition('chart-ispu-year', yearRows);
-  const top = topRowsFull().slice(0, 10).map((r) => ({ id: r.lower_bound ? `${r.id} ≥` : r.id, station: r.id, value: r.mean_2026, status: r.status, cat: categoryFromPm(r.mean_2026), days: r.days_2026 }));
-  makeBarChart('chart-rank-station', top, {
-    horizontal: true,
-    color: (r) => CAT_COLORS[r.cat] || C.navy,
-    label: (r) => fmt(r.value, 1),
-    grid: { left: 76, right: 46, top: 6, bottom: 6 },
-    yFont: 9,
-    onPick: (r) => openStationProfile(r.station),
-  });
+  makeCycleChart('chart-cycle');
+  makeObservedChart('chart-ov-health', { grid: { left: 92, right: 48, top: 24, bottom: 24 }, yFont: 9 });
+  makeSiteClassChart('chart-class');
   const islands = DATA.overview.island26.slice().sort((a, b) => b.mean - a.mean).map((r) => ({ id: r.island, value: r.mean, cat: categoryFromPm(r.mean), days: r.days }));
+  const selIsland = state.station ? (DATA.stationsById.get(state.station) || {}).island : null;
   makeBarChart('chart-rank-island', islands, {
     horizontal: true,
-    color: (r) => CAT_COLORS[r.cat] || C.navy,
+    color: (r) => (selIsland ? (r.id === selIsland ? CAT_COLORS[r.cat] || C.navy : 'rgba(24,32,72,.18)') : (CAT_COLORS[r.cat] || C.navy)),
     label: (r) => fmt(r.value, 1),
-    grid: { left: 86, right: 46, top: 6, bottom: 6 },
-    yFont: 9,
+    grid: { left: 78, right: 42, top: 6, bottom: 22 },
+    yFont: 8.5,
     onPick: (r) => { const spec = detailIsland(r.id); if (spec) openDetail(spec); },
   });
 }
+
 function makeStackedComposition(id, rows, opts = {}) {
   if (!rows || !rows.length) return null;
   const chart = makeChart(id, {
@@ -1635,6 +1771,7 @@ function pickByPixel(chart, el, axis, onPick) {
 }
 
 function trendRows() {
+  if (state.station) return DATA.time.station_monthly[state.station] || [];
   if (state.island === 'Semua') return DATA.overview.monthly;
   return DATA.time.island_monthly.filter((r) => r.island === state.island);
 }
@@ -1713,6 +1850,9 @@ function renderTime() {
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="grid-12">
+      ${card('Harian', 'µg/m³', `<div class="chart" id="chart-daily"></div>`, { cls: 'span-12 h-460', right: '<div class="card-sub">µg/m³ · garis 15 / 55 / 100</div>' })}
+    </div>
+    <div class="grid-12">
       ${card('Kalender harian', `PM2.5 · ${sub}`, `<div class="chart" id="chart-heat"></div>`, { cls: 'span-7 h-340', right: `<div class="heat-legend" id="legend-heat"></div><div class="card-sub">${sub}</div>` })}
       ${card('Jam × hari', 'µg/m³', `<div class="chart" id="chart-hour-dow"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">µg/m³ · jam × DOW</div>' })}
     </div>
@@ -1725,8 +1865,7 @@ function renderTime() {
       ${card('Hari kerja vs akhir pekan', 'µg/m³', `<div class="chart" id="chart-weekday"></div>`, { cls: 'span-5 h-280', right: '<div class="card-sub">µg/m³ · per tahun</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Bulanan', 'µg/m³', `<div class="chart" id="chart-monthly"></div>`, { cls: 'span-7 h-280', right: '<div class="card-sub">µg/m³</div>' })}
-      ${card('Harian', 'µg/m³', `<div class="chart" id="chart-daily"></div>`, { cls: 'span-5 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
+      ${card('Komposisi ISPU per tahun', '% hari-stasiun', `<div class="chart" id="chart-ispu-year"></div>` + ispuStackLegend(), { cls: 'span-12 h-280' })}
     </div>
   </div>`;
 }
@@ -1738,17 +1877,17 @@ function afterTime() {
   makeMonthIslandChart();
   makeEpisodeMonthChart();
   makeWeekdayChart();
-  makeMonthlyChart('chart-monthly', timeMonthlyRows(), {
-    compact: false,
-    onPick: (m) => { const spec = detailMonthScope(m); if (spec) openDetail(spec); },
-  });
   makeEpisodeChart();
+  const yearRows = Object.entries(DATA.overview.ispu_year_pct).map(([name, v]) => ({ name, ...v }));
+  makeStackedComposition('chart-ispu-year', yearRows, {
+    onPick: (name) => {
+      const spec = detailIspuYear(name);
+      if (spec) openDetail(spec);
+    },
+  });
 }
 
 function timeMonthlyRows() {
-  if (state.station) {
-    return (DATA.time.station_monthly[state.station] || []);
-  }
   return trendRows();
 }
 
@@ -1812,7 +1951,7 @@ function makeMonthIslandChart() {
     tooltip: { ...tooltipBase(), trigger: 'axis' },
     xAxis: { type: 'category', data: months.map((m) => monthLabel(m)), axisLabel: { color: C.muted, fontSize: 7.5, interval: 4 }, axisTick: { show: false } },
     yAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
-    series: islands.map((isl) => ({ name: isl, type: 'line', data: months.map((m) => by.get(`${m}|${isl}`) ?? null), smooth: false, symbol: 'none', lineStyle: { width: isl === state.island ? 2.4 : 1.3, color: ISLAND_COLORS[isl] || C.navy, opacity: state.island === 'Semua' || isl === state.island ? 1 : 0.35 }, itemStyle: { color: ISLAND_COLORS[isl] || C.navy }, markLine: isl === islands[0] ? { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: C.terra, width: 1, opacity: .6 }, data: [{ yAxis: 55 }] } : undefined })),
+    series: islands.map((isl) => ({ name: isl, type: 'line', data: months.map((m) => by.get(`${m}|${isl}`) ?? null), smooth: false, symbol: 'none', lineStyle: { width: isl === state.island ? 2.4 : 1.3, color: ISLAND_COLORS[isl] || C.navy, opacity: state.island === 'Semua' || isl === state.island ? 1 : 0.35 }, itemStyle: { color: ISLAND_COLORS[isl] || C.navy }, markLine: isl === islands[0] ? markLinePP(ppItem('y', 55, 'PP 55', C.yellow)) : undefined })),
   });
   pickByPixel(chart, document.getElementById('chart-month-island'), 'x', (mi2, yVal) => {
     const month = months[mi2];
@@ -1951,13 +2090,11 @@ function makeEpisodeChart() {
       sampling: 'lttb',
       lineStyle: { width: 1.6, color: C.navy },
       areaStyle: { color: 'rgba(16,42,67,.06)' },
-      markLine: {
-        silent: true,
-        symbol: 'none',
-        label: { show: false },
-        lineStyle: { type: 'dashed', width: 1, color: C.terra, opacity: .5 },
-        data: [{ yAxis: 15 }, { yAxis: 55 }, { yAxis: 100 }],
-      },
+      markLine: markLinePP(
+        ppItem('y', 55, 'PP 55', C.yellow),
+        { yAxis: 15, lineStyle: { type: [4, 3], width: 1, color: C.teal, opacity: .5 }, label: { show: false } },
+        { yAxis: 100, lineStyle: { type: [4, 3], width: 1, color: C.terra, opacity: .45 }, label: { show: false } },
+      ),
     }],
   });
   pickByPixel(chart, document.getElementById('chart-daily'), 'x', (ts) => {
@@ -2010,7 +2147,7 @@ function makeWeekdayChart() {
     xAxis: { type: 'category', data: rows.map((r) => String(r.year)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 10 } },
     yAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 9 } },
     series: [
-      { name: 'Hari kerja', type: 'bar', data: rows.map((r) => r.weekday), barWidth: 22, itemStyle: { color: C.navy, borderRadius: [3, 3, 0, 0] }, label: { show: true, position: 'top', fontFamily: 'IBM Plex Mono', fontSize: 9, color: C.navy, formatter: (p) => fmt(p.value, 1) } },
+      { name: 'Hari kerja', type: 'bar', data: rows.map((r) => r.weekday), barWidth: 22, itemStyle: { color: C.navy, borderRadius: [3, 3, 0, 0] }, label: { show: true, position: 'top', fontFamily: 'IBM Plex Mono', fontSize: 9, color: C.navy, formatter: (p) => fmt(p.value, 1) }, markLine: markLinePP(ppItem('y', 55, 'PP 55', C.yellow)) },
       { name: 'Akhir pekan', type: 'bar', data: rows.map((r) => r.weekend), barWidth: 22, itemStyle: { color: C.yellow, borderRadius: [3, 3, 0, 0] } },
     ],
   });
@@ -2033,40 +2170,20 @@ function renderGeo() {
   if (stId) state.station = stId;
   const st = DATA.stationsById.get(stId) || null;
   const meta = `${DATA.meta.periods.haze} · ${filteredStations().length} stasiun · ${DATA.meta.periods.data_end}`;
-  const aId = defaultCompareA();
-  const bId = defaultCompareB(aId);
-  state.compareA = aId; state.compareB = bId;
-  const options = filteredStations().slice().sort((a, b) => a.id.localeCompare(b.id)).map((s) => `<option value="${s.id}" ${s.id === aId ? 'selected' : ''}>A · ${s.id}</option>`).join('');
-  const optionsB = filteredStations().slice().sort((a, b) => a.id.localeCompare(b.id)).map((s) => `<option value="${s.id}" ${s.id === bId ? 'selected' : ''}>B · ${s.id}</option>`).join('');
   return `${pageHead('Wilayah', meta, `<span class="pill">1 Agu–14 Okt 2026</span>`)}
   <div class="page-body">
     <div class="grid-12">
       <section class="card span-7 h-420">
         <div class="card-head"><div class="card-title">Peta stasiun</div><div class="card-head-right"><div class="card-sub">ISPU dominan</div></div></div>
-        <div class="card-body"><div class="map" id="map-geo"></div><div class="map-legend" id="legend-geo"></div><div class="map-badge" id="badge-geo" style="display:none"></div></div>
+        <div class="card-body"><div class="map" id="map-geo"></div><div class="map-legend" id="legend-geo"></div></div>
       </section>
       <section class="card span-5 h-420">
-        <div class="card-head"><div class="card-title">Profil stasiun</div><div class="card-sub">${st ? 'klik titik lain' : 'pilih stasiun'}</div></div>
+        <div class="card-head"><div class="card-title">Profil stasiun</div><div class="card-head-right">${st ? `<button class="ghost-btn" type="button" data-action="compare-station">Bandingkan</button>` : ''}<div class="card-sub">${st ? 'klik titik lain' : 'pilih stasiun'}</div></div></div>
         <div class="card-body" id="profile-body">${renderProfile(st)}</div>
       </section>
     </div>
     <div class="grid-12">
-      ${card('Tren bulanan stasiun', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-profile-trend"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
-      <section class="card span-6 h-280">
-        <div class="card-head"><div class="card-title">Pilih pembanding</div><div class="card-head-right"><div class="card-sub">maks 2 profil</div></div></div>
-        <div class="card-body" style="padding:12px;display:flex;flex-direction:column;gap:10px">
-          <label class="filter-group"><span class="filter-label">Stasiun A</span><select class="select wide" id="compare-a">${options}</select></label>
-          <label class="filter-group"><span class="filter-label">Stasiun B</span><select class="select wide" id="compare-b">${optionsB}</select></label>
-          <div class="metric-grid">
-            <div class="metric"><div class="metric-label">A mean</div><div class="metric-value">${DATA.stationsById.get(aId) && DATA.stationsById.get(aId).mean_2026 != null ? fmt(DATA.stationsById.get(aId).mean_2026, 1) : '—'} <small>µg/m³</small></div></div>
-            <div class="metric"><div class="metric-label">B mean</div><div class="metric-value">${DATA.stationsById.get(bId) && DATA.stationsById.get(bId).mean_2026 != null ? fmt(DATA.stationsById.get(bId).mean_2026, 1) : '—'} <small>µg/m³</small></div></div>
-          </div>
-          <div class="card-sub">Bandingkan profil ada di bawah ini · 1 Agu–14 Okt 2026</div>
-        </div>
-      </section>
-    </div>
-    <div class="grid-12">
-      ${card(`Bandingkan profil · ${aId} vs ${bId}`, '1 Agu–14 Okt 2026', `<div class="card-body" style="padding:10px 12px"><div class="compare-2" id="compare-body"></div><div class="table-wrap" style="height:auto;max-height:240px"><table class="data" id="compare-table"></table></div></div>`, { cls: 'span-12 h-auto' })}
+      ${card('Tren bulanan stasiun', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-profile-trend"></div>`, { cls: 'span-12 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
     </div>
     <div class="grid-12">
       ${card('Kronis–akut', 'mean vs P95 harian · 1 Agu–14 Okt 2026', `<div class="chart" id="chart-chronic"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">X mean · Y P95</div>' })}
@@ -2109,10 +2226,8 @@ function afterGeo() {
   makeMap('map-geo', mapped, {
     onClick: (id) => { state.station = id; render(); },
     legend: ispuLegendFull(),
-    badge: 'ISPU dominan',
+    labels: true,
   });
-  const badge = $('#badge-geo');
-  if (badge) badge.textContent = 'ISPU dominan';
   const st = DATA.stationsById.get(selectedId) || null;
   if (st) {
     makeProfileSpark(st);
@@ -2121,15 +2236,10 @@ function afterGeo() {
       onPick: (m) => { const spec = detailMonthScope(m); if (spec) openDetail(spec); },
     });
   }
-  renderCompare();
   makeChronicChart();
   renderGeoTableBody();
-  const selA = $('#compare-a');
-  const selB = $('#compare-b');
   const search = $('#geo-table-search');
   const sort = $('#geo-table-sort');
-  if (selA) selA.addEventListener('change', () => { state.compareA = selA.value; render(); });
-  if (selB) selB.addEventListener('change', () => { state.compareB = selB.value; render(); });
   if (search) search.addEventListener('input', () => { state.tableSearch = search.value; renderGeoTableBody(); });
   if (sort) sort.addEventListener('change', () => { state.tableSort = sort.value; renderGeoTableBody(); });
 }
@@ -2137,11 +2247,11 @@ function makeChronicChart() {
   const rows = filteredStations().filter((s) => s.mean_2026 != null);
   const chart = makeChart('chart-chronic', {
     aria: { enabled: true },
-    grid: { left: 48, right: 16, top: 18, bottom: 34 },
+    grid: { left: 48, right: 16, top: 30, bottom: 34 },
     tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.value[3])}</b><br>mean ${fmt(p.value[0], 1)} µg/m³<br>P95 ${fmt(p.value[1], 1)} µg/m³<br>${esc(p.value[2])} · ${fmtInt(p.value[4])} hari` },
     xAxis: { type: 'value', name: 'mean µg/m³', nameLocation: 'middle', nameGap: 20, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
     yAxis: { type: 'value', name: 'P95 µg/m³', nameGap: 16, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
-    series: rows.map((s) => ({ type: 'scatter', data: [[s.mean_2026, s.p95_2026, s.ispu_dominant || '—', s.id, s.days_2026]], symbolSize: 8, itemStyle: { color: catColor(s.ispu_dominant), borderColor: C.paper, borderWidth: 1.2 }, label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, formatter: (p) => (p.value[0] > 100 || p.value[1] > 200 || p.value[3] === 'SM2-01') ? p.value[3] : '', distance: 4 } })),
+    series: rows.map((s, si) => ({ type: 'scatter', data: [[s.mean_2026, s.p95_2026, s.ispu_dominant || '—', s.id, s.days_2026]], symbolSize: 8, itemStyle: { color: catColor(s.ispu_dominant), borderColor: C.paper, borderWidth: 1.2 }, label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, formatter: (p) => (p.value[0] > 150 || p.value[1] > 400 || p.value[3] === 'SM2-01') ? p.value[3] : '', distance: 4 }, markLine: si === 0 ? markLinePP(ppItem('x', 55, '55', C.yellow), ppItem('y', 55, 'PP 55', C.yellow)) : undefined })),
   });
   chart.on('click', (p) => {
     if (p.seriesType !== 'scatter') return;
@@ -2170,9 +2280,9 @@ function renderGeoTableBody() {
   el.innerHTML = `<thead><tr><th>Stasiun</th><th>Kota</th><th>Pulau</th><th>ISPU dominan</th><th class="num">Mean</th><th class="num">P95</th><th class="num">Maks</th><th class="num">Hari >55</th><th class="num">Layak</th><th>Status</th></tr></thead><tbody>${rows.map((s) => { const comp = DATA.overview.ispu_station_pct[s.id] || {}; const pct55 = (comp['Tidak Sehat'] || 0) + (comp['Sangat Tidak Sehat'] || 0) + (comp['Berbahaya'] || 0); const hari55 = Math.round((s.days_2026 || 0) * pct55 / 100); return `<tr data-geo-station="${esc(s.id)}" tabindex="0"><td class="mono">${esc(s.id)}</td><td>${esc(s.city)}</td><td>${esc(s.island)}</td><td>${catBadge(s.ispu_dominant, s.ispu_share)}</td><td class="num">${s.lower_bound ? '≥' : ''}${fmt(s.mean_2026, 1)}</td><td class="num">${fmt(s.p95_2026, 1)}</td><td class="num">${fmt(s.max_2026, 1)}</td><td class="num">${fmtInt(hari55)}</td><td class="num">${fmt(s.usable_pct, 1)}%</td><td><span class="st ${statusSlug(s.status)}">${esc(s.status)}</span></td></tr>`; }).join('')}</tbody>`;
   bindRowActivate('#geo-table tbody tr', 'data-geo-station', detailStation);
 }
-function renderCompare() {
-  const body = $('#compare-body');
-  const table = $('#compare-table');
+function renderCompare(root = document) {
+  const body = root.querySelector('#compare-body');
+  const table = root.querySelector('#compare-table');
   if (!body || !table) return;
   const a = DATA.stationsById.get(state.compareA || '');
   const b = DATA.stationsById.get(state.compareB || '');
@@ -2213,13 +2323,49 @@ function renderCompare() {
     const rows2 = DATA.time.station_monthly[s.id] || [];
     makeChart(`compare-spark-${i}`, {
       aria: { enabled: true },
-      grid: { left: 6, right: 8, top: 6, bottom: 18 },
+      grid: { left: 8, right: 8, top: 6, bottom: 20 },
       tooltip: { ...tooltipBase(), formatter: (p) => `<b>${p.axisValue}</b><br>${fmt(p.value, 1)} µg/m³` },
       xAxis: { type: 'category', data: rows2.map((r) => monthLabel(r.month)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 7.5, interval: 5 } },
       yAxis: { type: 'value', splitLine: { show: false }, axisLabel: { show: false } },
       series: [{ type: 'line', data: rows2.map((r) => r.pm25), smooth: false, symbol: 'none', lineStyle: { width: 1.6, color: i === 0 ? C.navy : C.terra }, itemStyle: { color: i === 0 ? C.navy : C.terra }, areaStyle: { color: 'rgba(231,179,58,.14)' }, markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: C.terra, opacity: .45 }, data: [{ yAxis: 55 }] } }],
     });
   });
+}
+
+function detailCompare() {
+  const aId = defaultCompareA();
+  const bId = defaultCompareB(aId);
+  state.compareA = aId; state.compareB = bId;
+  const opts = (sel) => filteredStations().slice().sort((a, b) => a.id.localeCompare(b.id))
+    .map((s) => `<option value="${esc(s.id)}" ${s.id === sel ? 'selected' : ''}>${esc(s.id)} · ${esc(s.city)}</option>`).join('');
+  return {
+    key: 'compare',
+    wide: true,
+    kicker: 'Perbandingan stasiun · 1 Agu–14 Okt 2026',
+    title: 'Bandingkan profil',
+    chip: `${aId} vs ${bId}`,
+    body: `<div class="compare-pick">
+      <label class="filter-group"><span class="filter-label">Stasiun A</span><select class="select wide" data-compare="a">${opts(aId)}</select></label>
+      <label class="filter-group"><span class="filter-label">Stasiun B</span><select class="select wide" data-compare="b">${opts(bId)}</select></label>
+    </div>
+    <div class="compare-2" id="compare-body"></div>
+    <div class="table-wrap" style="height:auto;max-height:260px"><table class="data" id="compare-table"></table></div>
+    <div class="detail-note">Selisih relatif terhadap stasiun B; kelayakan dihitung dalam poin persentase.</div>`,
+    after: (root) => {
+      renderCompare(root);
+      root.querySelectorAll('[data-compare]').forEach((sel) => sel.addEventListener('change', () => {
+        if (sel.dataset.compare === 'a') state.compareA = sel.value;
+        else state.compareB = sel.value;
+        const next = detailCompare();
+        state.detail = next;
+        $('#detail-kicker').textContent = next.kicker;
+        $('#detail-title').textContent = next.title;
+        $('#detail-body').innerHTML = next.body;
+        next.after($('#detail-body'));
+        renderBackChip();
+      }));
+    },
+  };
 }
 
 function renderProfile(st) {
@@ -2503,6 +2649,7 @@ function makeScatter(id, rows, xKey, logX, xName = xKey, yName = 'PM2.5 2026 (µ
         itemStyle: { color: (p) => ISLAND_COLORS[p.value[5]] || C.navy, borderColor: C.paper, borderWidth: 1 },
         emphasis: { itemStyle: { color: C.yellow, borderColor: C.navy } },
         label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, distance: 4, formatter: (p) => (p.value[1] > 250 || p.value[0] > 400 || p.value[3] === 'KTG-02' || p.value[3] === 'KTG-01' || p.value[3] === 'SM2-01') ? p.value[3] : '' },
+        markLine: markLinePP(ppItem('y', 55, 'PP 55', C.yellow)),
       },
       {
         type: 'line',
@@ -2581,15 +2728,17 @@ function afterHealth() {
   makeHealthScatter();
 }
 
-function makeObservedChart() {
+function makeObservedChart(id = 'chart-health', opts = {}) {
+  const el = document.getElementById(id);
+  if (!el) return null;
   const y = healthYears()[2];
   const outcomes = DATA.health.outcomes;
   const actual = outcomes.map((o) => y.actual[o.key]);
   const expected = outcomes.map((o) => y.expected[o.key]);
   const excess = outcomes.map((o) => y.excess[o.key]);
-  const chart = makeChart('chart-health', {
+  const chart = makeChart(id, {
     aria: { enabled: true },
-    grid: { left: 104, right: 64, top: 26, bottom: 20 },
+    grid: opts.grid || { left: 104, right: 64, top: 26, bottom: 20 },
     legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 6, textStyle: { fontSize: 9, color: C.muted } },
     tooltip: {
       ...tooltipBase(),
@@ -2601,18 +2750,20 @@ function makeObservedChart() {
       },
     },
     xAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8.5, formatter: (v) => fmtInt(v) } },
-    yAxis: { type: 'category', inverse: true, data: outcomes.map((o) => o.label), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: 9.5 } },
+    yAxis: { type: 'category', inverse: true, data: outcomes.map((o) => o.label), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: opts.yFont || 9.5, interval: 0 } },
     series: [
       { name: 'Aktual', type: 'bar', data: actual, barWidth: 9, itemStyle: { color: C.navy, borderRadius: [0, 3, 3, 0] }, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => `+${fmtInt(excess[p.dataIndex])}` } },
       { name: 'Expected', type: 'bar', data: expected, barWidth: 9, itemStyle: { color: C.grey2, borderRadius: [0, 3, 3, 0] } },
     ],
   });
-  pickByPixel(chart, document.getElementById('chart-health'), 'y', (i) => {
+  if (!chart) return null;
+  pickByPixel(chart, el, 'y', (i) => {
     const o = outcomes[i];
     if (!o) return;
     const spec = detailOutcome(o.key);
     if (spec) openDetail(spec);
   });
+  return chart;
 }
 function makeHealthYearChart() {
   const years = healthYears();
@@ -2729,7 +2880,7 @@ function makeHealthScatter() {
   const pts = rows.map((r) => [r.pm, r.lag0, r.episode, r.station, r.island, r.actual, r.excess]);
   const chart = makeChart('chart-health-scatter', {
     aria: { enabled: true },
-    grid: { left: 46, right: 16, top: 18, bottom: 34 },
+    grid: { left: 46, right: 16, top: 30, bottom: 34 },
     tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.value[3])}</b><br>PM2.5 ${fmt(p.value[0], 1)} µg/m³<br>r lag 0 ${fmtR(p.value[1])}<br>episode ${fmtInt(p.value[2])} hari · ${esc(p.value[4])}` },
     xAxis: { type: 'value', name: 'mean PM2.5 (µg/m³)', nameLocation: 'middle', nameGap: 20, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
     yAxis: { type: 'value', name: 'r lag 0', nameGap: 16, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8, formatter: (v) => fmt(v, 2) } },
@@ -2737,7 +2888,8 @@ function makeHealthScatter() {
       type: 'scatter', data: pts, symbolSize: (v) => 5 + Math.min(9, Math.sqrt(v[2] || 1) / 3.5),
       itemStyle: { color: (p) => ISLAND_COLORS[p.value[4]] || C.navy, borderColor: C.paper, borderWidth: 1 },
       label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, distance: 4, formatter: (p) => (p.value[1] > 0.45 || p.value[0] > 250 ? p.value[3] : '') },
-      markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: C.muted, width: 1, opacity: .5 }, data: [{ xAxis: 55 }, { yAxis: 0.35 }] },
+      labelLayout: { hideOverlap: true },
+      markLine: markLinePP(ppItem('x', 55, 'PP 55', C.yellow), { yAxis: 0.35, lineStyle: { type: [4, 3], width: 1, color: C.muted, opacity: .5 }, label: { show: false } }),
     }],
   });
   chart.on('click', (p) => {
@@ -2933,7 +3085,7 @@ function makePriorityChart(rows) {
   const pts = rows.filter((r) => r.mean_2026 != null).map((r) => [r.gap, r.mean_2026, r.days_2026, r.station, r.status]);
   const chart = makeChart('chart-priority', {
     aria: { enabled: true },
-    grid: { left: 44, right: 16, top: 16, bottom: 30 },
+    grid: { left: 44, right: 16, top: 28, bottom: 30 },
     tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.value[3])}</b><br>gap ${fmt(p.value[0], 1)}%<br>mean ${fmt(p.value[1], 1)} µg/m³<br>${esc(p.value[4])}` },
     xAxis: { type: 'value', min: 0, max: 40, name: 'gap data (%)', nameLocation: 'middle', nameGap: 18, nameTextStyle: { fontSize: 8.5, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
     yAxis: { type: 'value', name: 'µg/m³', nameGap: 14, nameTextStyle: { fontSize: 8.5, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
@@ -2943,7 +3095,8 @@ function makePriorityChart(rows) {
       symbolSize: (v) => 5 + Math.min(7, v[2] / 14),
       itemStyle: { color: (p) => p.data[4] === 'Baik' ? C.teal : p.data[4] === 'Perhatian' ? C.yellow : p.data[4] === 'Terbatas' ? C.terra : p.data[4] === 'Tidak memadai' ? '#C0453C' : C.red, borderColor: C.paper, borderWidth: 1 },
       label: { show: true, position: 'right', offset: [5, 0], align: 'left', verticalAlign: 'middle', fontSize: 7.5, color: C.muted, formatter: (p) => (p.value[1] > 150 || p.value[0] > 8) ? p.value[3] : '' },
-      markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: C.muted, width: 1, opacity: .5 }, data: [{ xAxis: 10 }, { yAxis: 100 }] },
+      labelLayout: { hideOverlap: true },
+      markLine: markLinePP(ppItem('y', 55, 'PP 55', C.yellow), { xAxis: 10, lineStyle: { type: [4, 3], width: 1, color: C.muted, opacity: .5 }, label: { show: false } }, { yAxis: 100, lineStyle: { type: [4, 3], width: 1, color: C.muted, opacity: .4 }, label: { show: false } }),
     }],
   });
   chart.on('click', (p) => {
@@ -3080,11 +3233,41 @@ function monthLabel(m) {
   return `${names[Number(mo) - 1]} ${String(y).slice(2)}`;
 }
 
+// Shared threshold line for charts whose value axis is µg/m³.
+function ppItem(axis, value, text, color) {
+  return {
+    [axis === 'y' ? 'yAxis' : 'xAxis']: value,
+    lineStyle: { color, type: [4, 3], width: 1, opacity: 0.9 },
+    label: {
+      show: true,
+      formatter: text,
+      position: 'insideEndTop',
+      rotate: 0,
+      distance: 3,
+      fontFamily: 'IBM Plex Mono',
+      fontSize: 8,
+      color,
+      backgroundColor: 'rgba(255,255,255,.78)',
+      padding: [1, 2],
+      borderRadius: 2,
+    },
+  };
+}
+
+function markLinePP(...items) {
+  const data = items.filter(Boolean);
+  if (!data.length) return undefined;
+  return { silent: true, symbol: 'none', animation: false, data };
+}
+
+function ppLines(extra = []) {
+  return markLinePP(ppItem('y', 55, 'PP 55', C.yellow), ...extra);
+}
+
 function makeMonthlyChart(id, rows, opts = {}) {
   const months = Array.from(new Set(rows.map((r) => r.month))).sort();
   const years = Array.from(new Set(rows.map((r) => Number(r.year || String(r.month).slice(0, 4))))).sort();
   const by = new Map(rows.map((r) => [r.month, r.pm25]));
-  const colors = { 2024: '#B4BCCD', 2025: '#5E6A93', 2026: C.navy };
   const idxByYear = new Map();
   months.forEach((m, i) => {
     const y = Number(m.slice(0, 4));
@@ -3092,7 +3275,7 @@ function makeMonthlyChart(id, rows, opts = {}) {
     idxByYear.get(y).push(i);
   });
   // One continuous path: each year's series starts on the previous year's last month
-  // so the line never breaks at Jan. Colour changes per year, 2026 stays emphasised.
+  // so the line never breaks at Jan. Colour changes per year, newest year is emphasised.
   const series = years.map((y, si) => {
     const idx = idxByYear.get(y) || [];
     if (!idx.length) return null;
@@ -3100,22 +3283,33 @@ function makeMonthlyChart(id, rows, opts = {}) {
     const to = idx[idx.length - 1];
     const isLast = si === years.length - 1;
     const data = months.map((m, i) => (i >= from && i <= to && by.has(m) ? by.get(m) : null));
+    if (isLast) {
+      for (let i = data.length - 1; i >= 0; i -= 1) {
+        if (data[i] != null) {
+          data[i] = { value: data[i], symbolSize: 7, itemStyle: { borderWidth: 1.6 } };
+          break;
+        }
+      }
+    }
     return {
       name: String(y),
       type: 'line',
       data,
       connectNulls: false,
-      showSymbol: false,
+      showSymbol: isLast,
+      symbol: 'circle',
+      symbolSize: 3.6,
       smooth: false,
       lineStyle: {
-        width: isLast ? 2.8 : 1.9,
-        color: colors[y] || C.navy,
+        width: isLast ? 2.6 : 1.9,
+        color: YEAR_COLORS[y] || C.navy,
         shadowBlur: isLast ? 12 : 0,
-        shadowColor: isLast ? hexA(C.navy, 0.28) : 'transparent',
+        shadowColor: isLast ? hexA(YEAR_COLORS[y] || C.navy, 0.26) : 'transparent',
       },
-      itemStyle: { color: colors[y] || C.navy },
-      areaStyle: isLast ? { color: areaGradient(C.navy, 0.16, 0.005) } : undefined,
+      itemStyle: { color: YEAR_COLORS[y] || C.navy, borderColor: '#fff', borderWidth: 0.9 },
+      areaStyle: isLast ? { color: areaGradient(YEAR_COLORS[y] || C.navy, 0.14, 0.005) } : undefined,
       z: isLast ? 3 : 1,
+      markLine: isLast ? ppLines(opts.who15 ? [ppItem('y', 15, 'WHO 15', C.teal)] : []) : undefined,
       markArea: si === 0 ? {
         silent: true,
         itemStyle: { color: 'rgba(24,32,72,.032)' },
@@ -3129,7 +3323,7 @@ function makeMonthlyChart(id, rows, opts = {}) {
   }).filter(Boolean);
   const chart = makeChart(id, {
     aria: { enabled: true },
-    grid: { left: 36, right: 12, top: opts.compact ? 24 : 30, bottom: 24 },
+    grid: { left: 36, right: 14, top: opts.compact ? 26 : 30, bottom: opts.compact ? 42 : 48 },
     legend: { top: 0, right: 0, itemWidth: 12, itemHeight: 7, itemGap: 12, icon: 'roundRect', textStyle: { fontSize: 9, color: C.muted } },
     tooltip: {
       ...tooltipBase(),
@@ -3137,10 +3331,17 @@ function makeMonthlyChart(id, rows, opts = {}) {
       formatter: (ps) => {
         const p = ps.find((x) => x.value != null);
         if (!p) return '';
-        return `<b>${monthLabel(months[p.dataIndex])}</b><br>${fmt(p.value, 1)} µg/m³`;
+        const v = typeof p.value === 'object' && p.value ? p.value.value : p.value;
+        return `<b>${monthLabel(months[p.dataIndex])}</b><br>${fmt(v, 1)} µg/m³`;
       },
     },
-    xAxis: { type: 'category', data: months.map((m) => monthLabel(m)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 8.5, interval: 2 } },
+    xAxis: {
+      type: 'category',
+      data: months.map((m) => monthLabel(m)),
+      axisLine: { lineStyle: { color: C.line } },
+      axisTick: { show: false },
+      axisLabel: { color: C.muted, fontSize: 8, interval: opts.xInterval || 2, rotate: 45, align: 'right', verticalAlign: 'middle', margin: 8 },
+    },
     yAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8.5 } },
     series,
   });
@@ -3180,6 +3381,7 @@ function makeBarChart(id, rows, opts = {}) {
       showBackground: horizontal && opts.track !== false,
       backgroundStyle: { color: 'rgba(24,32,72,.045)', borderRadius: 8 },
       label: { show: true, position: horizontal ? 'right' : 'top', fontFamily: 'IBM Plex Mono', fontSize: opts.labelFont || 9, color: C.navy, formatter: (p) => opts.label ? opts.label(rows[p.dataIndex]) : fmt(p.value, 1) },
+      markLine: opts.pp55 ? markLinePP(ppItem(horizontal ? 'x' : 'y', 55, 'PP 55', C.yellow)) : undefined,
     }],
   });
   if (chart && opts.onPick) {
@@ -3189,6 +3391,263 @@ function makeBarChart(id, rows, opts = {}) {
     });
   }
   return chart;
+}
+
+/* ------------------------------------------------------- overview charts */
+
+function cycleSeries() {
+  const nat = DATA.time.diurnal || {};
+  const byClass = DATA.time.diurnal_class || {};
+  const hours = Array.from({ length: 24 }, (_, i) => String(i));
+  const pick = (src) => hours.map((h) => (src && src[h] != null ? Number(src[h]) : null));
+  return { hours, nat, natVals: pick(nat), road: pick(byClass['Traffic/Roadside']), peat: pick(byClass['Peatland/Forest']) };
+}
+
+function makeCycleChart(id) {
+  const { hours, natVals, road, peat } = cycleSeries();
+  if (!natVals.some((v) => v != null)) return null;
+  const all = [...natVals, ...road, ...peat].filter((v) => v != null);
+  const lo = Math.min(...all);
+  const hi = Math.max(...all);
+  const yMin = Math.max(50, Math.floor((lo - 6) / 10) * 10);
+  const yMax = Math.max(140, Math.ceil((hi + 6) / 10) * 10);
+  const labels = hours.map((h) => String(h).padStart(2, '0'));
+  const peak = (h) => {
+    const v = natVals[Number(h)];
+    if (v == null) return null;
+    const pagi = Number(h) < 12;
+    return {
+      coord: [labels[Number(h)], v],
+      value: v,
+      symbol: 'circle',
+      symbolSize: 6,
+      itemStyle: { color: pagi ? C.terra : C.navy, borderColor: '#fff', borderWidth: 1.4 },
+      label: {
+        show: true,
+        position: 'top',
+        offset: pagi ? [10, 0] : [-24, 0],
+        distance: 7,
+        formatter: `${pagi ? 'Puncak pagi' : 'Puncak sore'}\n${fmt(v, 1)}%`,
+        lineHeight: 11,
+        align: 'center',
+        fontFamily: 'IBM Plex Mono',
+        fontSize: 8,
+        fontWeight: 600,
+        color: C.navy,
+        backgroundColor: 'rgba(255,255,255,.82)',
+        padding: [2, 3],
+        borderRadius: 3,
+      },
+    };
+  };
+  const line = (name, data, color, dashed, z) => ({
+    name,
+    type: 'line',
+    data,
+    smooth: false,
+    connectNulls: true,
+    showSymbol: !dashed,
+    symbol: 'circle',
+    symbolSize: 3.4,
+    lineStyle: { color, width: dashed ? 1.6 : 2.4, type: dashed ? [5, 4] : 'solid' },
+    itemStyle: { color, borderColor: '#fff', borderWidth: 1 },
+    z,
+  });
+  const chart = makeChart(id, {
+    aria: { enabled: true },
+    grid: { left: 34, right: 12, top: 28, bottom: 22 },
+    legend: { top: 0, left: 0, itemWidth: 12, itemHeight: 7, itemGap: 10, icon: 'roundRect', textStyle: { fontSize: 9, color: C.muted } },
+    tooltip: {
+      ...tooltipBase(),
+      trigger: 'axis',
+      axisPointer: { type: 'line', lineStyle: { color: 'rgba(24,32,72,.18)' } },
+      formatter: (ps) => {
+        const i = ps[0] ? ps[0].dataIndex : 0;
+        return `<b>${labels[i]}:00</b>` + ps.map((p) => `<br>${esc(p.seriesName)} <b>${fmt(p.value, 1)}%</b>`).join('');
+      },
+    },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: labels,
+      axisLine: { lineStyle: { color: C.line } },
+      axisTick: { show: false },
+      axisLabel: { color: C.muted, fontSize: 8.5, interval: 3 },
+    },
+    yAxis: {
+      type: 'value',
+      min: yMin,
+      max: yMax,
+      splitNumber: 3,
+      splitLine: { lineStyle: { color: C.grid } },
+      axisLabel: { color: C.muted, fontSize: 8.5, formatter: '{value}%' },
+    },
+    series: [
+      {
+        ...line('Nasional', natVals, C.navy, false, 4),
+        markArea: {
+          silent: true,
+          itemStyle: { color: 'rgba(217,102,63,.10)' },
+          data: [[{ xAxis: '06' }, { xAxis: '08' }], [{ xAxis: '17' }, { xAxis: '19' }]],
+        },
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          data: [{ yAxis: 100, lineStyle: { color: 'rgba(24,32,72,.32)', type: [4, 3], width: 1 }, label: { show: false } }],
+        },
+        markPoint: { silent: true, data: [peak(7), peak(18)].filter(Boolean) },
+      },
+      line('Koridor jalan', road, C.terra, true, 2),
+      line('Lahan gambut', peat, C.teal, true, 2),
+    ],
+  });
+  if (chart) {
+    pickByPixel(chart, document.getElementById(id), 'x', (i) => {
+      const spec = detailHour(hours[i]);
+      if (spec) openDetail(spec);
+    });
+  }
+  return chart;
+}
+
+const SITE_CLASSES = ['Peatland/Forest', 'Industrial', 'Urban Background', 'Traffic/Roadside', 'Clean/Regional'];
+
+function siteClassRows() {
+  const rows = filteredStations();
+  return SITE_CLASSES.map((cls) => {
+    const g = rows.filter((r) => r.site_class === cls);
+    return {
+      id: cls,
+      n: g.length,
+      baseline: average(g.map((r) => r.baseline)),
+      mean: average(g.map((r) => r.mean_2026)),
+      p95: average(g.map((r) => r.p95_2026)),
+    };
+  }).filter((r) => r.n > 0 && r.mean != null)
+    .sort((a, b) => b.mean - a.mean);
+}
+
+function makeSiteClassChart(id) {
+  const rows = siteClassRows();
+  if (!rows.length) return null;
+  const chart = makeChart(id, {
+    aria: { enabled: true },
+    grid: { left: 102, right: 46, top: 26, bottom: 20 },
+    legend: { top: 0, left: 0, itemWidth: 10, itemHeight: 7, itemGap: 10, icon: 'roundRect', textStyle: { fontSize: 9, color: C.muted } },
+    tooltip: {
+      ...tooltipBase(),
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (ps) => {
+        const i = ps[0] ? ps[0].dataIndex : 0;
+        const r = rows[i];
+        const ratio = r.baseline ? r.mean / r.baseline : null;
+        return `<b>${esc(r.id)}</b><br>Baseline <b>${fmt(r.baseline, 1)}</b> µg/m³<br>Mean 2026 <b>${fmt(r.mean, 1)}</b> µg/m³${ratio ? `<br>${fmt(ratio, 2)}× baseline` : ''}<br>${r.n} stasiun`;
+      },
+    },
+    xAxis: {
+      type: 'value',
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: { lineStyle: { color: C.grid } },
+      axisLabel: { color: C.muted, fontSize: 8.5 },
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: rows.map((r) => r.id),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: C.navy, fontSize: 8.5, interval: 0 },
+    },
+    series: [
+      { name: 'Baseline', type: 'bar', data: rows.map((r) => r.baseline), barWidth: 8, barGap: '30%', itemStyle: { color: '#8FA0C4', borderRadius: [0, 4, 4, 0] } },
+      {
+        name: 'Mean 2026',
+        type: 'bar',
+        data: rows.map((r) => r.mean),
+        barWidth: 8,
+        itemStyle: { color: C.terra, borderRadius: [0, 4, 4, 0] },
+        label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => fmt(p.value, 1) },
+        markLine: markLinePP(ppItem('x', 55, 'PP 55', C.yellow)),
+      },
+    ],
+  });
+  if (chart) {
+    pickByPixel(chart, document.getElementById(id), 'y', (i) => {
+      const spec = detailSiteClass(rows[i].id);
+      if (spec) openDetail(spec);
+    });
+  }
+  return chart;
+}
+
+function detailHour(h) {
+  const { natVals, road, peat } = cycleSeries();
+  const i = Number(h);
+  const nat = natVals[i];
+  if (nat == null) return null;
+  const prev = natVals[(i + 23) % 24];
+  const delta = prev == null ? null : nat - prev;
+  const rows = [
+    { label: 'Nasional', value: nat, color: C.navy },
+    { label: 'Koridor jalan', value: road[i], color: C.terra },
+    { label: 'Lahan gambut', value: peat[i], color: C.teal },
+  ].filter((r) => r.value != null);
+  const label = `${String(i).padStart(2, '0')}:00`;
+  const body = `
+    ${detailMetrics([
+      ['Indeks nasional', `${fmt(nat, 1)}%`, ''],
+      ['Vs jam sebelumnya', delta == null ? '—' : `${delta >= 0 ? '+' : '−'}${fmt(Math.abs(delta), 1)}`, 'poin'],
+      ['Jam', label, ''],
+    ])}
+    <div class="detail-block"><div class="detail-label">Indeks per kelas · % rata-rata harian</div>${detailBars(rows.map((r) => ({ ...r, display: `${fmt(r.value, 1)}%` })))}</div>
+    <div class="detail-note">100% = rata-rata harian masing-masing seri</div>
+    <button class="primary-btn detail-cta" type="button" data-detail-go="waktu">Buka di Waktu</button>`;
+  return {
+    key: `hour:${i}`,
+    kicker: 'Siklus 24 jam · indeks %',
+    title: label,
+    chip: label,
+    body,
+    after: (root) => {
+      const cta = root.querySelector('[data-detail-go]');
+      if (cta) cta.addEventListener('click', () => jumpTo('waktu'));
+    },
+  };
+}
+
+function detailSiteClass(cls) {
+  const rows = filteredStations().filter((r) => r.site_class === cls);
+  if (!rows.length) return null;
+  const baseline = average(rows.map((r) => r.baseline));
+  const mean = average(rows.map((r) => r.mean_2026));
+  const p95 = average(rows.map((r) => r.p95_2026));
+  const ratio = baseline && mean ? mean / baseline : null;
+  const sorted = rows.slice().sort((a, b) => (b.mean_2026 == null ? -1 : b.mean_2026) - (a.mean_2026 == null ? -1 : a.mean_2026));
+  const body = `
+    ${detailMetrics([
+      ['Stasiun', String(rows.length), ''],
+      ['Baseline', fmt(baseline, 1), 'µg/m³'],
+      ['Mean 2026', fmt(mean, 1), 'µg/m³'],
+    ])}
+    <div class="detail-list">
+      <div class="row"><span>Rasio mean / baseline</span><b>${ratio ? `${fmt(ratio, 2)}×` : '—'}</b></div>
+      <div class="row"><span>P95 2026 rata-rata</span><b>${fmt(p95, 1)} µg/m³</b></div>
+    </div>
+    <div class="detail-block"><div class="detail-label">Stasiun · mean 2026</div>${detailBars(sorted.map((r) => ({ label: r.id, value: r.mean_2026 || 0, color: CAT_COLORS[categoryFromPm(r.mean_2026)] || C.navy })))}</div>
+    <button class="primary-btn detail-cta" type="button" data-detail-go="wilayah">Buka Wilayah</button>`;
+  return {
+    key: `class:${cls}`,
+    kicker: 'Kelas lokasi · 1 Agu–14 Okt 2026',
+    title: cls,
+    chip: cls,
+    body,
+    after: (root) => {
+      const cta = root.querySelector('[data-detail-go]');
+      if (cta) cta.addEventListener('click', () => jumpTo('wilayah'));
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ maps */
@@ -3522,20 +3981,14 @@ function addStationLabels(map, rows) {
       const lh = node.offsetHeight;
       const x = c.rep.x;
       const y = c.rep.y;
-      const cands = [
-        [x + 7, y - lh / 2],
-        [x - 7 - lw, y - lh / 2],
-        [x - lw / 2, y - lh - 8],
-        [x - lw / 2, y + 8],
-        [x + 6, y - lh - 6],
-        [x - 6 - lw, y - lh - 6],
-        [x + 6, y + 6],
-        [x - 6 - lw, y + 6],
-        [x + 13, y - lh / 2],
-        [x - 13 - lw, y - lh / 2],
-        [x - lw / 2, y - lh - 15],
-        [x - lw / 2, y + 15],
-      ];
+      // Labels always sit ABOVE their dot (never below/side) so the eye never
+      // re-scans the map. Horizontal nudge is allowed; if nothing fits the label
+      // is merged into the nearest one as +n by the merge rounds in place().
+      const cands = [];
+      [-8, -12, -16].forEach((dy, row) => {
+        const dxs = row === 0 ? [0, 4, -4, 8, -8, 12, -12, 16, -16] : [0, 4, -4, 8, -8, 12, -12];
+        dxs.forEach((dx) => cands.push([x - lw / 2 + dx, y - lh + dy]));
+      });
       let hit = null;
       for (const [lx, ly] of cands) {
         if (lx < 3 || ly < 3 || lx + lw > W - 3 || ly + lh > H - 3) continue;

@@ -75,7 +75,7 @@ Skala:
 
 | Peran | Ukuran / berat |
 |---|---|
-| Page title | Fraunces 28 / 600, tracking −.015em |
+| Page title | Fraunces 24 / 600, tracking −.015em |
 | Story title | Fraunces 48 / 600, leading 1.03 |
 | Card title | 13 / 700 |
 | Body | 12–12,5 / 400–550 |
@@ -88,7 +88,7 @@ Skala:
 
 ```
 .app  width:100% (max 2000), height:100%, padding clamp(10..16),
-      grid clamp(200..264)px + 1fr, gap clamp(10..16), transparan
+      grid clamp(168..224)px + 1fr, gap clamp(10..16), transparan
   .sidebar     kaca strong, radius 24, nav 42px
   .workspace   rows 58 / 46 / 1fr, gap 12
     .topbar    kaca, radius 18
@@ -100,7 +100,7 @@ Aurora: tiga orb blur 90px (mint kiri-atas, lavender kanan-atas, peach kanan-baw
 Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 
 **Layout fluid, tanpa skala.** `fit()` tidak lagi memakai `transform:scale`; stage mengisi lebar & tinggi viewport
-(1280–2000 px) sehingga tidak ada gutter kiri-kanan di laptop. Breakpoint: 1180 (sidebar 208), 900 (mobile),
+(1280–2000 px) sehingga tidak ada gutter kiri-kanan di laptop. Breakpoint: 1180 (sidebar 184), 900 (mobile),
 420 (mobile kecil), plus `max-height:880` untuk laptop pendek yang mengecilkan tinggi kartu satu tingkat.
 
 ## 6. Komponen
@@ -111,10 +111,14 @@ Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 - **Pill filter**: 28px, kaca putih, mono untuk nilai.
 - **Select filter**: 32px, latar putih solid, border `rgba(24,32,72,.16)`, teks 11.5px/650; label 9.5px uppercase `--brand` 58% + garis pemisah `1px --hairline` antar grup. Kontrol harus terbaca sebagai kontrol, bukan teks.
 - **Tabel**: header sticky putih 94%, 9px uppercase, `th.num` rata kanan agar lurus dengan `td.num`; padding 6–10px; angka mono; `border-collapse:separate`.
-- **Peta**: kanvas `#EAF2FB` + basemap GeoJSON lokal (34 provinsi, `fill` putih, garis `rgba(24,32,72,.26)` 0.7px) + label pulau 8px. Legenda/badge putih 88% tanpa blur. Tanpa tile server / API key.
+- **Peta**: kanvas `#EAF2FB` + basemap GeoJSON lokal (34 provinsi, `fill` putih, garis `rgba(24,32,72,.26)` 0.7px) + label pulau 8px. Legenda putih 88% tanpa blur, **ukuran kecil**: padding 6×8, swatch 8px, teks 9px, judul `.map-legend-title` 8px uppercase (menggantikan badge "ISPU dominan" yang dihapus). Tanpa tile server / API key.
+- **Label stasiun di peta**: mono 8px + halo putih; **selalu di atas titik** (`dy` −8 / −12 / −16, boleh geser ±16px horizontal agar tidak menabrak). Yang tidak muat digabung ke label terdekat sebagai chip `+n` (klik → `fitBounds` gumpalan). Titik stasiun tidak boleh tertutup label.
 - **Story**: panel kaca penuh, progress kuning, kartu 7 halaman di adegan 6.
 - **Mobile**: bottom nav 5 item (4 halaman + Lainnya), filter bottom sheet, more sheet 6 item.
-- **Panel detail**: 380px di kanan (top 84, bottom 14), radius 22, latar opaque `rgba(255,255,255,.95)`, judul Fraunces 22, body scroll internal. Mobile: bottom sheet `max-height:78vh`, latar `rgba(252,253,255,.98)` tanpa blur, radius atas 22, scrim `rgba(19,26,56,.22)`.
+- **Panel detail**: 368px di kanan (top 84, bottom 14), radius 22, latar opaque `rgba(255,255,255,.95)`, judul Fraunces 22, body scroll internal. Varian **`.is-wide`** = `min(680px, 100% − 2×pad)` untuk tabel/profil berpasangan (perbandingan stasiun). Mobile: bottom sheet `max-height:78vh`, latar `rgba(252,253,255,.98)` tanpa blur, radius atas 22, scrim `rgba(19,26,56,.22)`; `.is-wide` kembali `width:auto`.
+- **KPI clickable**: KPI yang punya destinasi dirender `role="link"`, `tabindex="0"`, `data-kpi`, Enter/Space aktif; KPI tanpa destinasi dirender biasa (tanpa affordance link).
+- **Garis ambang P55**: `ppItem()`/`markLinePP()` → garis putus amber 1px + label mono 8px "PP 55" (posisi `insideEndTop`, tidak diputar). Dipakai di semua plot µg/m³; chart % / heatmap / kasus dikecualikan.
+- **Tombol ghost di head kartu** (`Bandingkan`): 24px, border 1px `--hairline`, teks 10.5/700, membuka panel detail lebar.
 - **Chip kembali**: pill 32px di topbar, ikon panah 14, teks 11px, maks 300px (mobile 150px), animasi `chip-in` 260ms. Dua mode: konteks panel (`Okt 2026`, `KTG-02`, `Angin TGR`) dan halaman asal (`.to-page`, `← Ringkasan`). Saat mode halaman aktif, `body.has-back` menyembunyikan brand di mobile.
 - **Baris daftar di panel**: label mono 9.5 + track 6px + nilai mono; hover putih 85%; baris ber-`data-station` membuka profil stasiun.
 - **Stack ISPU di panel**: tinggi 9px, segmen ber-radius penuh, border putih 0.55 antar segmen, legenda 10px.
@@ -141,7 +145,29 @@ Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 - `prefers-reduced-motion`: semua animasi/transisi dimatikan.
 - Panel detail: `role="dialog"`, `aria-labelledby` judul, fokus pindah ke tombol × saat buka, Esc menutup, klik luar menutup, Back browser menutup.
 
-## 9. Jangan
+## 9. Tata letak per halaman (kontrak 11 Nov 2026)
+
+Grid 12 kolom; tinggi kartu dari token `h-*` (`h-460` = 420px desktop, 330px compact, `auto` di mobile). `.grid-55` = dua kolom `55fr/45fr` (jadi satu kolom di ≤900px).
+
+**Ringkasan** — alur baca: seberapa buruk → di mana → sejak kapan → siapa → dampaknya.
+1. `page-head` + 3 pill (rasio 2024, `valid_overall_pct`, wilayah tanpa stasiun).
+2. KPI ×4, semuanya pintu: `mean`→Waktu, `above55`→Waktu, `heaviest`→panel stasiun, `resp`→Kesehatan.
+3. `.grid-55`: Peta hotspot **55%** ∥ Tren nasional **45%** — keduanya `h-420`.
+4. Baris 2 (`h-320`): Ranking pulau `span-3` ∥ Siklus 24 jam `span-4` ∥ Observed vs expected `span-5`.
+5. Baris 3 (`h-280`): Komposisi ISPU per pulau `span-6` ∥ Perbandingan 5 kelas lokasi `span-6`.
+- Tren: 2026 `#D9663F` + titik, 2024/2025 slate, label bulan miring 45°, garis `PP 55` + `WHO 15`.
+- Siklus 24 jam: 3 garis indeks % (Nasional solid, Koridor jalan & Lahan gambut putus) + pita 06–08/17–19 + label puncak netral.
+- Kelas lokasi: grouped bar baseline vs mean 2026, garis P55 vertikal, urut menurun, tanpa P95.
+- Filter stasiun ter-scope ke KPI/peta/tren/komposisi/siklus/observed/kelas.
+- Tidak ada lagi kartu "Beban kesehatan" dan "Ranking 10 stasiun".
+
+**Waktu** — "Harian" `span-12 h-460` di baris pertama setelah KPI (fokus utama). Tidak ada kartu "Bulanan" (tren bulanan ada di Ringkasan). Kartu terakhir: Komposisi ISPU per tahun `span-12 h-280`, klik tahun → panel komposisi + selisih poin % vs tahun sebelumnya.
+
+**Wilayah** — Peta stasiun `span-7 h-420` ∥ Profil stasiun `span-5 h-420` (tombol `Bandingkan` di head → panel `.is-wide`: select A/B + 2 profil + tabel selisih). Lalu Tren bulanan stasiun `span-12 h-280`, Kronis–akut `span-7 h-320` ∥ Ringkasan beban `span-5 h-320`, tabel 27 stasiun. Tidak ada kartu "Pilih pembanding"/"Bandingkan profil" di halaman.
+
+**Sidebar** — `clamp(168px, 12.2vw, 224px)`, breakpoint ≤1180px → 184px.
+
+## 10. Jangan
 
 - Kaca di dalam kaca, blur pada tabel/metric, atau bayangan gelap pekat.
 - Headline interpretif, paragraf insight, kalimat di bawah KPI.
