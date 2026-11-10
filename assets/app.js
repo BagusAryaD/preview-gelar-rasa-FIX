@@ -171,9 +171,7 @@ async function boot() {
 
 function fit() {
   const app = $('#app');
-  if (window.innerWidth <= 900) { app.style.transform = ''; return; }
-  const s = Math.min(window.innerWidth / 1440, window.innerHeight / 900, 1);
-  app.style.transform = `scale(${s})`;
+  if (app) app.style.transform = '';
 }
 
 function parseUrl() {
@@ -2934,6 +2932,10 @@ function makePriorityChart(rows) {
 }
 
 /* ------------------------------------------------------------------ methodology */
+function defList(pairs) {
+  return `<dl class="defs">${pairs.map(([k, v]) => `<div class="def"><dt>${esc(k)}</dt><span class="colon">:</span><dd>${esc(v)}</dd></div>`).join('')}</dl>`;
+}
+
 function renderMethod() {
   const m = DATA.method;
   const d = m.data_quality;
@@ -2943,8 +2945,8 @@ function renderMethod() {
     <section class="card method-card">
       <div class="method-scroll" id="method-scroll">
         <div class="method-intro"><span class="pill">hash ${m.metrics_sha256.slice(0, 12)}…</span><span class="pill">${m.generated_at}</span><span class="card-sub">Semua angka di preview berasal dari file ini.</span></div>
-        <details class="acc" open><summary><span class="chev">›</span>Definisi KPI</summary><div class="acc-body"><ul>${m.definitions.map(([k, v]) => `<li><b>${esc(k)}</b> — ${esc(v)}</li>`).join('')}</ul></div></details>
-        <details class="acc"><summary><span class="chev">›</span>Aturan QC</summary><div class="acc-body"><ul>${m.qc.map(([k, v]) => `<li><b>${esc(k)}</b> — ${esc(v)}</li>`).join('')}</ul></div></details>
+        <details class="acc" open><summary><span class="chev">›</span>Definisi KPI</summary><div class="acc-body">${defList(m.definitions)}</div></details>
+        <details class="acc"><summary><span class="chev">›</span>Aturan QC</summary><div class="acc-body">${defList(m.qc)}</div></details>
         <details class="acc"><summary><span class="chev">›</span>Data contract</summary><div class="acc-body">
           <table><thead><tr><th>Item</th><th class="num">Nilai</th></tr></thead><tbody>
             <tr><td>Baris mentah</td><td class="num">${fmtInt(d.raw_rows)}</td></tr>
@@ -3058,24 +3060,49 @@ function makeMonthlyChart(id, rows, opts = {}) {
   const months = Array.from(new Set(rows.map((r) => r.month))).sort();
   const years = Array.from(new Set(rows.map((r) => Number(r.year || String(r.month).slice(0, 4))))).sort();
   const by = new Map(rows.map((r) => [r.month, r.pm25]));
-  const colors = { 2024: C.grey, 2025: C.muted, 2026: C.navy };
-  const series = years.map((y) => ({
-    name: String(y),
-    type: 'line',
-    data: months.map((m) => (m.slice(0, 4) === String(y) && by.has(m) ? by.get(m) : null)),
-    connectNulls: false,
-    showSymbol: false,
-    smooth: false,
-    lineStyle: {
-      width: y === 2026 ? 2.6 : 1.5,
-      color: colors[y] || C.navy,
-      shadowBlur: y === 2026 ? 12 : 0,
-      shadowColor: y === 2026 ? hexA(C.navy, 0.28) : 'transparent',
-    },
-    itemStyle: { color: colors[y] || C.navy },
-    areaStyle: y === 2026 ? { color: areaGradient(C.navy, 0.16, 0.005) } : undefined,
-    z: y === 2026 ? 3 : 1,
-  }));
+  const colors = { 2024: '#B4BCCD', 2025: '#5E6A93', 2026: C.navy };
+  const idxByYear = new Map();
+  months.forEach((m, i) => {
+    const y = Number(m.slice(0, 4));
+    if (!idxByYear.has(y)) idxByYear.set(y, []);
+    idxByYear.get(y).push(i);
+  });
+  // One continuous path: each year's series starts on the previous year's last month
+  // so the line never breaks at Jan. Colour changes per year, 2026 stays emphasised.
+  const series = years.map((y, si) => {
+    const idx = idxByYear.get(y) || [];
+    if (!idx.length) return null;
+    const from = Math.max(0, idx[0] - 1);
+    const to = idx[idx.length - 1];
+    const isLast = si === years.length - 1;
+    const data = months.map((m, i) => (i >= from && i <= to && by.has(m) ? by.get(m) : null));
+    return {
+      name: String(y),
+      type: 'line',
+      data,
+      connectNulls: false,
+      showSymbol: false,
+      smooth: false,
+      lineStyle: {
+        width: isLast ? 2.8 : 1.9,
+        color: colors[y] || C.navy,
+        shadowBlur: isLast ? 12 : 0,
+        shadowColor: isLast ? hexA(C.navy, 0.28) : 'transparent',
+      },
+      itemStyle: { color: colors[y] || C.navy },
+      areaStyle: isLast ? { color: areaGradient(C.navy, 0.16, 0.005) } : undefined,
+      z: isLast ? 3 : 1,
+      markArea: si === 0 ? {
+        silent: true,
+        itemStyle: { color: 'rgba(24,32,72,.032)' },
+        data: years.filter((_, k) => k % 2 === 1).map((yy) => {
+          const ix = idxByYear.get(yy);
+          if (!ix || !ix.length) return null;
+          return [{ xAxis: monthLabel(months[ix[0]]) }, { xAxis: monthLabel(months[ix[ix.length - 1]]) }];
+        }).filter(Boolean),
+      } : undefined,
+    };
+  }).filter(Boolean);
   const chart = makeChart(id, {
     aria: { enabled: true },
     grid: { left: 36, right: 12, top: opts.compact ? 24 : 30, bottom: 24 },
@@ -3084,11 +3111,12 @@ function makeMonthlyChart(id, rows, opts = {}) {
       ...tooltipBase(),
       trigger: 'axis',
       formatter: (ps) => {
-        const m = ps[0].axisValue;
-        return `<b>${m}</b>` + ps.filter((p) => p.value != null).map((p) => `<br>${p.seriesName}: ${fmt(p.value, 1)} µg/m³`).join('');
+        const p = ps.find((x) => x.value != null);
+        if (!p) return '';
+        return `<b>${monthLabel(months[p.dataIndex])}</b><br>${fmt(p.value, 1)} µg/m³`;
       },
     },
-    xAxis: { type: 'category', data: months.map((m) => monthLabel(m)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 8.5, interval: 3 } },
+    xAxis: { type: 'category', data: months.map((m) => monthLabel(m)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 8.5, interval: 2 } },
     yAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8.5 } },
     series,
   });
@@ -3140,6 +3168,42 @@ function makeBarChart(id, rows, opts = {}) {
 }
 
 /* ------------------------------------------------------------------ maps */
+let basemapPromise = null;
+function loadBasemap() {
+  if (!basemapPromise) {
+    basemapPromise = fetch('data/geo/id_provinces.geojson')
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  return basemapPromise;
+}
+
+function addBasemap(map, beforeId) {
+  loadBasemap().then((geo) => {
+    if (!geo || !map || (map.isDisposed && map.isDisposed())) return;
+    try {
+      if (!map.getSource('basemap')) map.addSource('basemap', { type: 'geojson', data: geo });
+      const anchor = beforeId && map.getLayer(beforeId) ? beforeId : undefined;
+      if (!map.getLayer('basemap-land')) {
+        map.addLayer({
+          id: 'basemap-land',
+          type: 'fill',
+          source: 'basemap',
+          paint: { 'fill-color': '#FFFFFF', 'fill-antialias': true },
+        }, anchor);
+      }
+      if (!map.getLayer('basemap-prov')) {
+        map.addLayer({
+          id: 'basemap-prov',
+          type: 'line',
+          source: 'basemap',
+          paint: { 'line-color': 'rgba(24,32,72,.26)', 'line-width': 0.7 },
+        }, anchor);
+      }
+    } catch (_) { /* map disposed mid-load */ }
+  });
+}
+
 function makeMap(id, rows, opts = {}) {
   const el = document.getElementById(id);
   if (!el || !window.maplibregl) return null;
@@ -3153,8 +3217,11 @@ function makeMap(id, rows, opts = {}) {
     pitchWithRotate: false,
   });
   maps.push(map);
+  el.__napasMap = map;
   const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 12, className: 'map-popup' });
   map.on('load', () => {
+    map.addLayer({ id: 'sea', type: 'background', paint: { 'background-color': '#EAF2FB' } });
+    addBasemap(map, 'stations-halo');
     const features = rows.map((r) => ({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [r.lon, r.lat] },
@@ -3224,11 +3291,11 @@ function makeMap(id, rows, opts = {}) {
 
 function addIslandLabels(map) {
   const labels = [
-    ['SUMATERA', 96.6, 4.2],
-    ['KALIMANTAN', 113.2, 4.0],
-    ['JAWA', 111.6, -9.6],
-    ['SULAWESI', 124.2, 1.2],
-    ['PAPUA', 139.4, -9.0],
+    ['SUMATERA', 101.4, -0.6],
+    ['KALIMANTAN', 113.6, -0.6],
+    ['JAWA', 111.4, -8.7],
+    ['SULAWESI', 122.4, -5.6],
+    ['PAPUA', 138.2, -4.6],
   ];
   labels.forEach(([text, lon, lat]) => {
     const el = document.createElement('div');

@@ -7,8 +7,8 @@ Sistem visual: **Langit Kaca** — glassmorphism di atas kanvas aurora; detail t
 dan aturan chart ada di [`DESIGN.md`](DESIGN.md).
 
 - Semua angka berasal dari `data/metrics.json` (hash `75f98f06…`) melalui `build_preview_data.py`.
-- Chart memakai **ECharts 5** dan peta memakai **MapLibre GL 4** dari CDN, jadi opsi chart bisa dipakai hampir 1:1 di `echarts-for-react`.
-- Layout dikunci 1440×900 lalu diskalakan dengan `transform: scale()`; di bawah 900px beralih ke layout mobile (bottom nav + filter sheet).
+- Chart memakai **ECharts 5** dan peta memakai **MapLibre GL 4**, keduanya **di-vendor lokal** di `assets/vendor/` sehingga preview jalan penuh tanpa internet (opsi chart tetap bisa dipakai hampir 1:1 di `echarts-for-react`).
+- Layout **fluid**: stage mengisi lebar & tinggi viewport (1280–2000 px) tanpa `transform: scale()`; di bawah 900px beralih ke layout mobile (bottom nav + filter sheet).
 
 ## Menjalankan
 
@@ -37,13 +37,15 @@ preview/
 ├─ DESIGN.md                  token, resep kaca, aturan chart, checklist aksesibilitas
 ├─ assets/
 │  ├─ app.js                  render 7 halaman, section terpisah, filter, chart, peta, URL state
-│  ├─ style.css               sistem kaca, layout 1440×900, responsive, motion
+│  ├─ style.css               sistem kaca, layout fluid, responsive, motion
+│  ├─ vendor/                 echarts.min.js, maplibre-gl.js/.css (offline, tanpa CDN)
 │  ├─ fonts.css               @font-face self-host
 │  ├─ fonts/                  Fraunces, Plus Jakarta Sans, IBM Plex Mono (woff2)
 │  └─ logo.png                logo Gelar Rasa (480 px, sudah di-trim)
 ├─ _backup_2026-11-09/        salinan index.html, style.css, app.js sebelum redesign
 ├─ data/
 │  ├─ meta.json               hash metrics.json, data quality, periode
+│  ├─ geo/id_provinces.geojson  siluet 34 provinsi untuk basemap (183 KB, Natural Earth 1:50m, disederhanakan, domain publik)
 │  ├─ overview.json           KPI, ranking, tren bulanan, per pulau, ISPU per bulan (nasional + pulau)
 │  ├─ stations.json           metadata 27 stasiun + koordinat
 │  ├─ time.json               harian/bulanan stasiun & pulau, diurnal, hour×dow, episode
@@ -96,13 +98,23 @@ Chip di topbar punya dua mode:
 Asal klik disimpan di `state.origin` + `history.state`; URL tetap bersih (tanpa parameter detail).
 
 QA interaksi: `_test_detail.py` (23 cek), `_test_origin.py`, `_test_waktu.py` (19),
-`_test_wilayah_sumber.py` (24), `_test_kesehatan_jaringan.py` (28), dan `_test_regress.py`
-(blur/overflow/console 7 halaman × desktop + mobile).
+`_test_wilayah_sumber.py` (24), `_test_kesehatan_jaringan.py` (28), `_test_regress.py`
+(blur/overflow/console 7 halaman × desktop + mobile), `_test_polish.py` (fluid layout 5 lebar,
+basemap, kontinuitas tren, keselarasan header tabel, grid definisi, kontras filter),
+`_test_fluid2.py` (story 1280/1920/1024 + panel detail 1920), dan `_test_offline.py`
+(tidak ada request eksternal).
 
 ## Peta tanpa token
 
-Peta memakai style kosong `{version: 8, sources: {}, layers: []}` dan hanya
-menambahkan titik GeoJSON dari `stations.json`. Tidak ada MapTiler/Mapbox token.
+Peta memakai style kosong `{version: 8, sources: {}, layers: []}` lalu menambahkan:
+
+1. layer `sea` (background `#EAF2FB`),
+2. layer `basemap-land` + `basemap-prov` dari `data/geo/id_provinces.geojson`
+   (34 provinsi, disederhanakan Douglas–Peucker 0.012° dengan filter pulau < ~64 km²,
+   hasil 183 KB),
+3. titik GeoJSON dari `stations.json`.
+
+Tidak ada MapTiler/Mapbox token dan tidak ada tile server, jadi peta tetap tampil offline.
 Label pulau adalah Marker DOM, bukan layer basemap.
 
 ## Catatan port ke Next.js
@@ -110,14 +122,14 @@ Label pulau adalah Marker DOM, bukan layer basemap.
 1. Pindahkan `assets/app.js` menjadi komponen/hook (`useEffect` + `echarts.init`).
    Opsi chart bisa disalin langsung; ganti `makeChart()` dengan `setOption()`.
 2. `fetch('data/*.json')` menjadi impor statis atau route handler.
-3. Peta: `maplibre-gl` React wrapper dengan style kosong yang sama.
+3. Peta: `maplibre-gl` React wrapper dengan style kosong yang sama + GeoJSON basemap lokal.
 4. Filter sudah disimpan di URL (`page`, `island`, `station`, `mode`, `scene`);
    pertahankan kontrak ini agar tautan yang sudah dibagikan tetap valid. Chart yang
    berbeda tidak memakai tab/switch; tampil sebagai section terpisah yang bisa di-scroll.
 5. Token warna, kaca, dan tipografi ada di [`DESIGN.md`](DESIGN.md) dan bagian atas
    `style.css` — jadikan Tailwind theme atau CSS variables di `globals.css`.
-6. Layout: shell grid `232px 1fr` pada desktop; di bawah 900px sidebar diganti bottom
-   nav 5 item, filter jadi bottom sheet, dan Story memakai kolom tunggal.
+6. Layout: shell grid `clamp(200px,15vw,264px) 1fr` tanpa `transform: scale`; di bawah 900px
+   sidebar diganti bottom nav 5 item, filter jadi bottom sheet, dan Story memakai kolom tunggal.
 7. Jaga anggaran performa: maksimum 14 elemen `backdrop-filter` per halaman; jangan
    menaruh kaca di dalam kaca.
 

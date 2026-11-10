@@ -87,18 +87,21 @@ Skala:
 ## 5. Shell
 
 ```
-.app  1440×900, padding 14, grid 232px + 1fr, gap 14, transparan
+.app  width:100% (max 2000), height:100%, padding clamp(10..16),
+      grid clamp(200..264)px + 1fr, gap clamp(10..16), transparan
   .sidebar     kaca strong, radius 24, nav 42px
   .workspace   rows 58 / 46 / 1fr, gap 12
     .topbar    kaca, radius 18
-    .filterbar kaca soft, radius 16
+    .filterbar kaca putih 72%, radius 16
     .main > .page  scroll internal
 ```
 
 Aurora: tiga orb blur 90px (mint kiri-atas, lavender kanan-atas, peach kanan-bawah) + grain 5%.
 Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 
-`fit()` tetap skala 1440×900; pada 1440×900 scale = 1.
+**Layout fluid, tanpa skala.** `fit()` tidak lagi memakai `transform:scale`; stage mengisi lebar & tinggi viewport
+(1280–2000 px) sehingga tidak ada gutter kiri-kanan di laptop. Breakpoint: 1180 (sidebar 208), 900 (mobile),
+420 (mobile kecil), plus `max-height:880` untuk laptop pendek yang mengecilkan tinggi kartu satu tingkat.
 
 ## 6. Komponen
 
@@ -106,8 +109,9 @@ Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 - **Card**: head 42px dengan hairline; body chart penuh; tanpa footer naratif.
 - **Badge ISPU**: pill 21px, border + latar lembut, dot 5px.
 - **Pill filter**: 28px, kaca putih, mono untuk nilai.
-- **Tabel**: header sticky putih 90%, 9px uppercase; baris 6–7px padding; angka mono.
-- **Peta**: kanvas transparan + grid 30px + halo radial; legenda/badge putih 88% tanpa blur.
+- **Select filter**: 32px, latar putih solid, border `rgba(24,32,72,.16)`, teks 11.5px/650; label 9.5px uppercase `--brand` 58% + garis pemisah `1px --hairline` antar grup. Kontrol harus terbaca sebagai kontrol, bukan teks.
+- **Tabel**: header sticky putih 94%, 9px uppercase, `th.num` rata kanan agar lurus dengan `td.num`; padding 6–10px; angka mono; `border-collapse:separate`.
+- **Peta**: kanvas `#EAF2FB` + basemap GeoJSON lokal (34 provinsi, `fill` putih, garis `rgba(24,32,72,.26)` 0.7px) + label pulau 8px. Legenda/badge putih 88% tanpa blur. Tanpa tile server / API key.
 - **Story**: panel kaca penuh, progress kuning, kartu 7 halaman di adegan 6.
 - **Mobile**: bottom nav 5 item (4 halaman + Lainnya), filter bottom sheet, more sheet 6 item.
 - **Panel detail**: 380px di kanan (top 84, bottom 14), radius 22, latar opaque `rgba(255,255,255,.95)`, judul Fraunces 22, body scroll internal. Mobile: bottom sheet `max-height:78vh`, latar `rgba(252,253,255,.98)` tanpa blur, radius atas 22, scrim `rgba(19,26,56,.22)`.
@@ -122,7 +126,7 @@ Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 - Sumbu: label 9px `--muted`, garis `rgba(24,32,72,.075)`, tanpa tick.
 - Bar: radius 8 ujung luar, lebar 10 horizontal / 22 vertikal; track horizontal `rgba(24,32,72,.045)`.
 - Bar bertumpuk: lebar 16, radius 4, border putih 1px.
-- Line 2026: navy 2.6px + shadow 12 + area gradient 16%→0. Tahun lain 1.5px abu.
+- Line tren bulanan: **satu jalur kontinu** 2024-01 → 2026-10. Tiap seri tahun dimulai pada bulan terakhir tahun sebelumnya (`from = firstIndex − 1`) supaya garis tidak putus di Januari. Warna per tahun: 2024 `#B4BCCD`, 2025 `#5E6A93`, 2026 navy; lebar 1.9 → 2.8px; area gradient + shadow hanya 2026; pita tahun ganjil `rgba(24,32,72,.032)` sebagai `markArea`.
 - Heatmap: border putih 1px; ramp mengikuti makna (mint→amber→terra untuk PM; terra→netral→navy untuk korelasi).
 - Larangan: dual axis, 3D, pie >4 irisan, warna kategori di luar palet.
 - Chart yang bisa diklik memakai `pickByPixel(chart, el, axis, onPick)` (konversi piksel → indeks, toleransi 1 baris/kolom penuh) atau `pickPolar()` untuk wind rose, bukan hit-test simbol; kursor pointer + callback ditunda satu frame agar dispose aman.
