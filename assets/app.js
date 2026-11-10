@@ -857,9 +857,18 @@ function bindRowActivate(selector, attr, make) {
   });
 }
 
-function detailStation(id) {
+function stationTip(s) {
+  const cat = s.ispu_dominant || '—';
+  const val = `${s.lower_bound ? '≥' : ''}${fmt(s.mean_2026, 1)}`;
+  return `<div class="map-tip-h"><span class="dot" style="background:${catColor(cat)}"></span><b>${esc(s.id)}</b><span class="cat">${esc(cat)}</span></div>`
+    + `<div class="map-tip-n">${val}<small> µg/m³</small><small class="sep"> · P95 ${fmt(s.p95_2026, 1)}</small></div>`
+    + `<div class="map-tip-s">${esc(s.city)}</div>`;
+}
+
+function detailStation(id, opts = {}) {
   const st = DATA.stationsById.get(id);
   if (!st) return null;
+  const toWilayah = opts.cta === 'wilayah';
   const comp = DATA.overview.ispu_station_pct[id] || {};
   const months = (DATA.time.station_monthly[id] || []).slice(-12);
   const rank = topRowsFull().findIndex((r) => r.id === id) + 1;
@@ -877,7 +886,7 @@ function detailStation(id) {
       <div class="row"><span>Peringkat nasional</span><b>${rank || '—'}/${topRowsFull().length}</b></div>
       <div class="row"><span>Hari layak</span><b>${fmtInt(st.days_2026)} hari</b></div>
     </div>
-    <button class="primary-btn detail-cta" type="button" data-station-profile="${esc(id)}">Buka profil stasiun</button>`;
+    <button class="primary-btn detail-cta" type="button" ${toWilayah ? `data-station-go="${esc(id)}"` : `data-station-profile="${esc(id)}"`}>Buka profil stasiun</button>`;
   return {
     key: `station:${id}`,
     kicker: `Stasiun · ${st.island}`,
@@ -885,6 +894,11 @@ function detailStation(id) {
     chip: id,
     body,
     after: (root) => {
+      const go = root.querySelector('[data-station-go]');
+      if (go) go.addEventListener('click', () => {
+        closeDetail(true);
+        openStationProfile(id);
+      });
       const btn = root.querySelector('[data-station-profile]');
       if (btn) btn.addEventListener('click', () => {
         closeDetail(true);
@@ -1492,19 +1506,29 @@ function ispuStackLegend() {
 
 function afterOverview() {
   const rows = filteredStations();
-  makeMap('map-overview', rows.map((s) => ({
+  const hot = makeMap('map-overview', rows.map((s) => ({
     id: s.id,
     lat: s.lat,
     lon: s.lon,
     color: catColor(s.ispu_dominant),
     r: s.mean_2026 == null ? 4.5 : 4 + Math.min(4, s.mean_2026 / 90),
     selected: s.id === state.station,
-    popup: `<b>${esc(s.id)}</b><br>${esc(s.ispu_dominant || '—')} · ${s.ispu_share == null ? '—' : fmt(s.ispu_share, 1) + '% hari'}<br>${fmt(s.mean_2026, 1)} µg/m³ · ${esc(s.status)}`,
+    mean: s.mean_2026,
+    tip: stationTip(s),
   })), {
-    onClick: (id) => jumpTo('wilayah', { station: id }),
+    onClick: (id) => {
+      const spec = detailStation(id, { cta: 'wilayah' });
+      if (!spec) return;
+      openDetail(spec);
+      if (hot && hot.getLayer('stations-selected')) {
+        hot.setFilter('stations-selected', ['==', ['get', 'id'], id]);
+      }
+    },
     legend: ispuLegendFull(),
     badge: 'ISPU dominan',
-    labels: false,
+    labels: true,
+    islands: false,
+    zoom: true,
   });
   const badge = $('#badge-overview');
   if (badge) badge.textContent = 'ISPU dominan';
@@ -3218,7 +3242,9 @@ function makeMap(id, rows, opts = {}) {
   });
   maps.push(map);
   el.__napasMap = map;
-  const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 12, className: 'map-popup' });
+  const tip = makeMapTip(el);
+  const byId = new Map();
+  rows.forEach((r) => byId.set(r.id, r));
   map.on('load', () => {
     map.addLayer({ id: 'sea', type: 'background', paint: { 'background-color': '#EAF2FB' } });
     addBasemap(map, 'stations-halo');
@@ -3263,30 +3289,335 @@ function makeMap(id, rows, opts = {}) {
         'circle-stroke-width': 2.5,
       },
     });
-    map.on('click', 'stations', (e) => {
-      const f = e.features && e.features[0];
-      if (f && opts.onClick) opts.onClick(f.properties.id);
+    map.addLayer({
+      id: 'stations-hit',
+      type: 'circle',
+      source: 'stations',
+      paint: {
+        'circle-radius': ['+', ['get', 'r'], 8],
+        'circle-color': '#000000',
+        'circle-opacity': 0.01,
+      },
     });
-    map.on('mouseenter', 'stations', (e) => {
+    map.on('click', 'stations-hit', (e) => {
+      const f = e.features && e.features[0];
+      if (!f) return;
+      tip.hide();
+      if (opts.onClick) opts.onClick(f.properties.id);
+    });
+    map.on('mousemove', 'stations-hit', (e) => {
       map.getCanvas().style.cursor = 'pointer';
       const f = e.features && e.features[0];
-      if (f) popup.setLngLat(e.lngLat).setHTML(f.properties.popup).addTo(map);
+      const r = f && byId.get(f.properties.id);
+      if (r) tip.show(r.tip || r.popup, e.point);
     });
-    map.on('mouseleave', 'stations', () => {
+    map.on('mouseleave', 'stations-hit', () => {
       map.getCanvas().style.cursor = '';
-      popup.remove();
+      tip.hide();
     });
+    map.on('move', () => tip.hide());
     if (rows.length) {
       const b = new maplibregl.LngLatBounds();
       rows.forEach((r) => b.extend([r.lon, r.lat]));
       if (rows.length === 1) map.setCenter([rows[0].lon, rows[0].lat]);
       else map.fitBounds(b, { padding: 42, duration: 0, maxZoom: 5.2 });
     }
-    if (opts.labels !== false) addIslandLabels(map);
+    if (opts.zoom !== false) addMapZoom(map);
+    if (opts.labels) addStationLabels(map, rows);
+    if (opts.islands !== false) addIslandLabels(map);
   });
   const legend = document.getElementById(id.replace('map', 'legend'));
   if (legend && opts.legend) legend.innerHTML = opts.legend;
   return map;
+}
+
+function makeMapTip(el) {
+  const node = document.createElement('div');
+  node.className = 'map-tip';
+  node.hidden = true;
+  el.appendChild(node);
+  let timer = 0;
+  let point = null;
+  let html = '';
+  const position = () => {
+    if (node.hidden || !point) return;
+    const W = el.clientWidth;
+    const H = el.clientHeight;
+    if (!W || !H) return;
+    const w = node.offsetWidth;
+    const h = node.offsetHeight;
+    let x = point.x + 12;
+    let y = point.y - h - 14;
+    if (y < 6) y = point.y + 18;
+    x = Math.max(6, Math.min(W - w - 6, x));
+    y = Math.max(6, Math.min(H - h - 6, y));
+    node.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
+  };
+  return {
+    show(next, nextPoint) {
+      if (!next) return;
+      point = nextPoint;
+      if (next !== html) {
+        html = next;
+        node.innerHTML = next;
+      }
+      if (node.hidden) {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          node.hidden = false;
+          position();
+        }, 90);
+      } else {
+        position();
+      }
+    },
+    hide() {
+      clearTimeout(timer);
+      node.hidden = true;
+      html = '';
+    },
+  };
+}
+
+function addMapZoom(map) {
+  const el = map.getContainer();
+  const wrap = document.createElement('div');
+  wrap.className = 'map-zoom';
+  wrap.innerHTML = '<button type="button" data-zoom="in" aria-label="Perbesar peta" title="Perbesar">+</button>'
+    + '<button type="button" data-zoom="out" aria-label="Perkecil peta" title="Perkecil">−</button>';
+  el.appendChild(wrap);
+  const btnIn = wrap.querySelector('[data-zoom="in"]');
+  const btnOut = wrap.querySelector('[data-zoom="out"]');
+  const sync = () => {
+    const z = map.getZoom();
+    btnIn.disabled = z >= 7;
+    btnOut.disabled = z <= 2.8;
+  };
+  wrap.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || b.disabled) return;
+    const z = map.getZoom();
+    const next = b.dataset.zoom === 'in' ? Math.min(7, z + 0.8) : Math.max(2.8, z - 0.8);
+    map.easeTo({ zoom: next, duration: 260 });
+  });
+  sync();
+  map.on('zoom', sync);
+}
+
+function addStationLabels(map, rows) {
+  const el = map.getContainer();
+  const layer = document.createElement('div');
+  layer.className = 'map-labels';
+  el.appendChild(layer);
+  const nodeById = new Map();
+  rows.forEach((r) => {
+    const n = document.createElement('span');
+    n.className = 'map-label';
+    n.dataset.id = r.id;
+    n.hidden = true;
+    layer.appendChild(n);
+    nodeById.set(r.id, n);
+  });
+
+  let clusters = [];
+  let placed = [];
+  let frame = 0;
+
+  const chrome = () => {
+    const base = el.getBoundingClientRect();
+    const out = [];
+    [el, el.parentElement].filter(Boolean).forEach((scope) => {
+      scope.querySelectorAll('.map-legend,.map-badge,.map-zoom').forEach((s) => {
+        const b = s.getBoundingClientRect();
+        if (!b.width || !b.height) return;
+        out.push({ x: b.left - base.left - 2, y: b.top - base.top - 2, w: b.width + 4, h: b.height + 4 });
+      });
+    });
+    return out;
+  };
+
+  const group = (pts, merges) => {
+    const parent = pts.map((_, i) => i);
+    const find = (i) => {
+      let j = i;
+      while (parent[j] !== j) {
+        parent[j] = parent[parent[j]];
+        j = parent[j];
+      }
+      return j;
+    };
+    pts.forEach((a, i) => {
+      pts.forEach((b, j) => {
+        if (j <= i) return;
+        if (Math.hypot(a.x - b.x, a.y - b.y) >= 14) return;
+        const ri = find(i);
+        const rj = find(j);
+        if (ri !== rj) parent[rj] = ri;
+      });
+    });
+    const groups = new Map();
+    pts.forEach((p, i) => {
+      const k = find(i);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(p);
+    });
+    let list = [...groups.values()].map((g) => ({
+      pts: g,
+      rep: g.reduce((best, cur) => ((cur.r.mean || 0) > (best.r.mean || 0) ? cur : best), g[0]),
+    }));
+    for (let guard = 0; guard < 60; guard += 1) {
+      const index = new Map(list.map((c) => [c.rep.r.id, c]));
+      let acted = false;
+      for (const c of list) {
+        const target = merges.get(c.rep.r.id);
+        if (!target) continue;
+        const dst = index.get(target);
+        if (!dst || dst === c) continue;
+        dst.pts = dst.pts.concat(c.pts);
+        merges.forEach((v, k) => {
+          if (v === c.rep.r.id) merges.set(k, dst.rep.r.id);
+        });
+        list = list.filter((k) => k !== c);
+        acted = true;
+        break;
+      }
+      if (!acted) break;
+    }
+    return list.sort((a, b) => ((b.rep.r.selected ? 1e6 : 0) + (b.rep.r.mean || 0))
+      - ((a.rep.r.selected ? 1e6 : 0) + (a.rep.r.mean || 0)));
+  };
+
+  const layout = (merges) => {
+    const W = el.clientWidth;
+    const H = el.clientHeight;
+    if (!W || !H) return null;
+    const pts = rows
+      .map((r) => {
+        const p = map.project([r.lon, r.lat]);
+        return { r, x: p.x, y: p.y };
+      })
+      .filter((p) => p.x > -30 && p.x < W + 30 && p.y > -30 && p.y < H + 30);
+    const list = group(pts, merges);
+    const occupied = chrome();
+    pts.forEach((p) => {
+      const rad = 3;
+      occupied.push({ id: p.r.id, x: p.x - rad, y: p.y - rad, w: rad * 2, h: rad * 2 });
+    });
+    nodeById.forEach((n) => {
+      n.hidden = true;
+      n.style.visibility = '';
+    });
+    const ok = [];
+    const failed = [];
+    list.forEach((c) => {
+      const node = nodeById.get(c.rep.r.id);
+      if (!node) return;
+      node.innerHTML = esc(c.rep.r.id) + (c.pts.length > 1
+        ? ` <span class="n" role="button" tabindex="0" aria-label="Zoom ke ${c.pts.length} stasiun di sekitar sini">+${c.pts.length - 1}</span>`
+        : '');
+      node.classList.toggle('is-sel', !!c.rep.r.selected);
+      node.hidden = false;
+      node.style.visibility = 'hidden';
+      const lw = node.offsetWidth;
+      const lh = node.offsetHeight;
+      const x = c.rep.x;
+      const y = c.rep.y;
+      const cands = [
+        [x + 7, y - lh / 2],
+        [x - 7 - lw, y - lh / 2],
+        [x - lw / 2, y - lh - 8],
+        [x - lw / 2, y + 8],
+        [x + 6, y - lh - 6],
+        [x - 6 - lw, y - lh - 6],
+        [x + 6, y + 6],
+        [x - 6 - lw, y + 6],
+        [x + 13, y - lh / 2],
+        [x - 13 - lw, y - lh / 2],
+        [x - lw / 2, y - lh - 15],
+        [x - lw / 2, y + 15],
+      ];
+      let hit = null;
+      for (const [lx, ly] of cands) {
+        if (lx < 3 || ly < 3 || lx + lw > W - 3 || ly + lh > H - 3) continue;
+        const box = { x: lx - 1, y: ly - 1, w: lw + 2, h: lh + 2 };
+        const clash = occupied.some((o) => box.x < o.x + o.w && o.x < box.x + box.w
+          && box.y < o.y + o.h && o.y < box.y + box.h);
+        if (clash) continue;
+        hit = [lx, ly];
+        break;
+      }
+      if (!hit) {
+        node.hidden = true;
+        node.style.visibility = '';
+        failed.push(c);
+        return;
+      }
+      node.style.visibility = '';
+      node.style.transform = `translate(${Math.round(hit[0])}px,${Math.round(hit[1])}px)`;
+      occupied.push({ x: hit[0], y: hit[1], w: lw, h: lh });
+      ok.push({ c, dx: hit[0] - x, dy: hit[1] - y, node });
+    });
+    return { ok, failed };
+  };
+
+  const place = () => {
+    const merges = new Map();
+    let res = layout(merges);
+    if (!res) return;
+    for (let round = 0; round < 4 && res.failed.length; round += 1) {
+      if (!res.ok.length) break;
+      res.failed.forEach((c) => {
+        let best = null;
+        res.ok.forEach((k) => {
+          const d = Math.hypot(k.c.rep.x - c.rep.x, k.c.rep.y - c.rep.y);
+          if (!best || d < best.d) best = { d, id: k.c.rep.r.id };
+        });
+        if (best) merges.set(c.rep.r.id, best.id);
+      });
+      const next = layout(merges);
+      if (!next) break;
+      res = next;
+    }
+    clusters = res.ok.map((k) => k.c).concat(res.failed);
+    placed = res.ok.map((k) => ({ r: k.c.rep.r, dx: k.dx, dy: k.dy, node: k.node }));
+  };
+
+  const shift = () => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      placed.forEach((p) => {
+        const q = map.project([p.r.lon, p.r.lat]);
+        p.node.style.transform = `translate(${Math.round(q.x + p.dx)}px,${Math.round(q.y + p.dy)}px)`;
+      });
+    });
+  };
+
+  map.on('moveend', place);
+  map.on('zoomend', place);
+  map.on('resize', place);
+  map.on('move', shift);
+
+  layer.addEventListener('click', (e) => {
+    const chip = e.target.closest('.n');
+    if (!chip) return;
+    e.stopPropagation();
+    const host = chip.closest('.map-label');
+    const c = clusters.find((k) => k.rep.r.id === (host && host.dataset.id));
+    if (!c || c.pts.length < 2) return;
+    const b = new maplibregl.LngLatBounds();
+    c.pts.forEach((p) => b.extend([p.r.lon, p.r.lat]));
+    map.fitBounds(b, { padding: 64, maxZoom: 6.4, duration: 520 });
+  });
+  layer.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const chip = e.target.closest('.n');
+    if (!chip) return;
+    e.preventDefault();
+    chip.click();
+  });
+
+  place();
 }
 
 function addIslandLabels(map) {
