@@ -454,6 +454,13 @@ stats_by_station = {str(st): window_stats(g) for st, g in comp.groupby("station"
 ispu_haze26_pct = metrics.get("ispu_haze26_pct", {})
 ispu_year_pct = metrics.get("ispu_year_pct", {})
 ispu_station_pct = {str(st): ispu_composition(g) for st, g in haze.groupby("station")}
+ispu_month_national = {
+    str(month): {"days": int(len(g)), "pct": ispu_composition(g)} for month, g in usable.groupby("month")
+}
+ispu_month_island = [
+    {"month": str(month), "island": str(isl), "days": int(len(g)), "pct": ispu_composition(g)}
+    for (month, isl), g in usable.groupby(["month", "island"])
+]
 
 episode_monthly_islands = []
 for (month, isl), g in usable.groupby(["month", "island"]):
@@ -773,6 +780,8 @@ dump(
         "ispu_haze26_pct": ispu_haze26_pct,
         "ispu_year_pct": ispu_year_pct,
         "ispu_station_pct": ispu_station_pct,
+        "ispu_month_national": ispu_month_national,
+        "ispu_month_island": ispu_month_island,
     },
 )
 

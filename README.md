@@ -33,7 +33,7 @@ Contoh URL state:
 
 ```
 preview/
-├─ index.html                 shell: aurora, sidebar, topbar, filterbar, mobile nav/sheet, story
+├─ index.html                 shell: aurora, sidebar, topbar (chip kembali), filterbar, panel detail, mobile nav/sheet, story
 ├─ DESIGN.md                  token, resep kaca, aturan chart, checklist aksesibilitas
 ├─ assets/
 │  ├─ app.js                  render 7 halaman, section terpisah, filter, chart, peta, URL state
@@ -44,7 +44,7 @@ preview/
 ├─ _backup_2026-11-09/        salinan index.html, style.css, app.js sebelum redesign
 ├─ data/
 │  ├─ meta.json               hash metrics.json, data quality, periode
-│  ├─ overview.json           KPI, ranking, tren bulanan, per pulau
+│  ├─ overview.json           KPI, ranking, tren bulanan, per pulau, ISPU per bulan (nasional + pulau)
 │  ├─ stations.json           metadata 27 stasiun + koordinat
 │  ├─ time.json               harian/bulanan stasiun & pulau, diurnal, hour×dow, episode
 │  ├─ sources.json            korelasi, polutan, meteorologi, wind rose
@@ -70,6 +70,34 @@ python build_preview_data.py
 Skrip akan menyalin `metrics.json`, menghitung SHA-256, lalu menulis ulang semua
 JSON. Setelah itu muat ulang browser. Jangan mengedit angka di `index.html` atau
 `app.js`: semua nilai wajib lewat JSON.
+
+## Interaksi panel detail
+
+Setiap halaman data punya pintu masuk ke satu panel detail yang sama (desktop: kolom kanan
+380px; mobile: bottom sheet 78vh).
+
+| Halaman | Yang bisa diklik |
+|---|---|
+| Ringkasan | Bulan di tren nasional/pulau; segmen ISPU pulau; bar ranking stasiun; bar ranking pulau |
+| Waktu | Kalender harian; heatmap jam×hari; kelas diurnal; heatmap bulan×pulau; episode per bulan; garis bulanan (nasional/pulau/stasiun); garis harian |
+| Wilayah | Scatter kronis–akut; baris tabel 27 stasiun; tren 12 bulan profil stasiun |
+| Sumber | Sel matriks korelasi polutan; sektor wind rose; 3 scatter driver; baris tabel meteorologi |
+| Kesehatan | Bar observed vs expected; bar kelebihan per tahun; garis lag 0–14; garis bulanan rentan; scatter beban–respons; Top 10 stasiun |
+| Jaringan | Titik peta status; bar komposisi QC; sel matriks kelengkapan; scatter prioritas; 2 tabel status |
+
+Panel bisa ditutup dengan Esc, tombol ×, klik luar, atau Back browser.
+
+Chip di topbar punya dua mode:
+
+- **Konteks panel** — mis. `Okt 2026`, `Kalimantan · Berbahaya`, `KTG-02`, `Angin TGR`; hanya menutup panel.
+- **Halaman asal** (`.to-page`) — mis. `← Ringkasan` setelah panel mengarahkan ke halaman lain
+  (mis. "Buka profil stasiun"); klik chip memulihkan halaman, filter, dan posisi scroll asal.
+
+Asal klik disimpan di `state.origin` + `history.state`; URL tetap bersih (tanpa parameter detail).
+
+QA interaksi: `_test_detail.py` (23 cek), `_test_origin.py`, `_test_waktu.py` (19),
+`_test_wilayah_sumber.py` (24), `_test_kesehatan_jaringan.py` (28), dan `_test_regress.py`
+(blur/overflow/console 7 halaman × desktop + mobile).
 
 ## Peta tanpa token
 

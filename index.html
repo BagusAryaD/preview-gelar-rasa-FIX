@@ -78,6 +78,10 @@
           <span class="sep">/</span>
           <span>Gelar Rasa 2026</span>
         </div>
+        <button class="back-chip" id="back-chip" type="button" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+          <span id="back-chip-label"></span>
+        </button>
         <div class="top-actions">
           <div class="seg" id="mode-switch" role="group" aria-label="Mode tampilan">
             <button type="button" data-mode="explore" class="active">Explore</button>
@@ -128,6 +132,18 @@
     </div>
 
     <div class="filter-scrim" id="filter-scrim" hidden></div>
+
+    <aside class="detail" id="detail" role="dialog" aria-modal="false" aria-labelledby="detail-title" hidden>
+      <div class="detail-head">
+        <div class="detail-titles">
+          <div class="detail-kicker" id="detail-kicker"></div>
+          <h2 class="detail-title" id="detail-title"></h2>
+        </div>
+        <button class="icon-btn" id="detail-close" type="button" aria-label="Tutup detail">✕</button>
+      </div>
+      <div class="detail-body" id="detail-body"></div>
+    </aside>
+    <div class="detail-scrim" id="detail-scrim" hidden></div>
 
     <nav class="mnav" aria-label="Navigasi mobile">
       <a class="mnav-item" href="?page=ringkasan" data-page="ringkasan">

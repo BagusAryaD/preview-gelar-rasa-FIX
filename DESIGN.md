@@ -110,6 +110,11 @@ Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 - **Peta**: kanvas transparan + grid 30px + halo radial; legenda/badge putih 88% tanpa blur.
 - **Story**: panel kaca penuh, progress kuning, kartu 7 halaman di adegan 6.
 - **Mobile**: bottom nav 5 item (4 halaman + Lainnya), filter bottom sheet, more sheet 6 item.
+- **Panel detail**: 380px di kanan (top 84, bottom 14), radius 22, latar opaque `rgba(255,255,255,.95)`, judul Fraunces 22, body scroll internal. Mobile: bottom sheet `max-height:78vh`, latar `rgba(252,253,255,.98)` tanpa blur, radius atas 22, scrim `rgba(19,26,56,.22)`.
+- **Chip kembali**: pill 32px di topbar, ikon panah 14, teks 11px, maks 300px (mobile 150px), animasi `chip-in` 260ms. Dua mode: konteks panel (`Okt 2026`, `KTG-02`, `Angin TGR`) dan halaman asal (`.to-page`, `← Ringkasan`). Saat mode halaman aktif, `body.has-back` menyembunyikan brand di mobile.
+- **Baris daftar di panel**: label mono 9.5 + track 6px + nilai mono; hover putih 85%; baris ber-`data-station` membuka profil stasiun.
+- **Stack ISPU di panel**: tinggi 9px, segmen ber-radius penuh, border putih 0.55 antar segmen, legenda 10px.
+- **Baris tabel interaktif**: `cursor:pointer` + `tabindex="0"`; aktivasi klik **dan** Enter/Space lewat `bindRowActivate()`. Atribut per tabel: `data-geo-station`, `data-meteo`, `data-health-station`, `data-net-station`.
 
 ## 7. Chart
 
@@ -120,6 +125,8 @@ Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 - Line 2026: navy 2.6px + shadow 12 + area gradient 16%→0. Tahun lain 1.5px abu.
 - Heatmap: border putih 1px; ramp mengikuti makna (mint→amber→terra untuk PM; terra→netral→navy untuk korelasi).
 - Larangan: dual axis, 3D, pie >4 irisan, warna kategori di luar palet.
+- Chart yang bisa diklik memakai `pickByPixel(chart, el, axis, onPick)` (konversi piksel → indeks, toleransi 1 baris/kolom penuh) atau `pickPolar()` untuk wind rose, bukan hit-test simbol; kursor pointer + callback ditunda satu frame agar dispose aman.
+- Polar (`convertFromPixel({polarIndex:0})`) mengembalikan `[radius, angleIndex]` — urutan terbalik dari grid. Sudut tengah sektor = `90 − (i + 0.5) × 22,5` derajat.
 
 ## 8. Aksesibilitas
 
@@ -128,6 +135,7 @@ Animasi drift 46–62 detik; mati saat `prefers-reduced-motion`.
 - `aria-current="page"` pada nav aktif; `aria-expanded` pada sheet; tombol ikon punya `aria-label`.
 - Target sentuh ≥ 32px; bottom nav 64px.
 - `prefers-reduced-motion`: semua animasi/transisi dimatikan.
+- Panel detail: `role="dialog"`, `aria-labelledby` judul, fokus pindah ke tombol × saat buka, Esc menutup, klik luar menutup, Back browser menutup.
 
 ## 9. Jangan
 
