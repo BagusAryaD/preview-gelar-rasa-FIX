@@ -274,8 +274,6 @@ function initShell() {
   }));
   $('#btn-share').addEventListener('click', shareLink);
   $('#more-share').addEventListener('click', () => { closeMore(); shareLink(); });
-  $('#btn-download').addEventListener('click', downloadMetrics);
-  $('#more-download').addEventListener('click', () => { closeMore(); downloadMetrics(); });
   $('#story-close').addEventListener('click', closeStory);
   $('#story-prev').addEventListener('click', () => setScene(state.scene - 1));
   $('#story-next').addEventListener('click', () => {
@@ -386,15 +384,6 @@ async function shareLink() {
   } catch {
     toast(location.href);
   }
-}
-
-function downloadMetrics() {
-  const a = document.createElement('a');
-  a.href = 'data/metrics.json';
-  a.download = 'metrics.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
 }
 
 function go(page) {
@@ -1830,7 +1819,8 @@ function afterOverview() {
         hot.setFilter('stations-selected', ['==', ['get', 'id'], id]);
       }
     },
-    legend: provLegendHtml(),
+    legend: ispuLegendFull(),
+    legendKind: 'stations',
     labels: true,
     islands: false,
     zoom: true,
@@ -3046,13 +3036,17 @@ function makeLagMultiChart() {
     ['asthma_emergency_cases', 'Asma', '#2F8FB0', true],
     ['copd_admissions', 'PPOK', '#C0453C', true],
   ];
+  const all = keys.flatMap((k) => defs.map(([key]) => lag[k][key]).filter((v) => typeof v === 'number' && !Number.isNaN(v)));
+  const lo = all.length ? Math.min(...all) : 0;
+  const hi = all.length ? Math.max(...all) : 1;
+  const pad = Math.max(0.005, (hi - lo) * 0.15);
   const chart = makeChart('chart-lag', {
     aria: { enabled: true },
     grid: { left: 42, right: 12, top: 30, bottom: 26 },
     legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 7, textStyle: { fontSize: 8, color: C.muted } },
     tooltip: { ...tooltipBase(), trigger: 'axis' },
     xAxis: { type: 'category', data: keys, axisLabel: { color: C.muted, fontSize: 8 }, axisTick: { show: false } },
-    yAxis: { type: 'value', min: 0.15, max: 0.4, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8, formatter: (v) => fmt(v, 2) } },
+    yAxis: { type: 'value', min: Number((lo - pad).toFixed(3)), max: Number((hi + pad).toFixed(3)), splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8, formatter: (v) => fmt(v, 2) } },
     series: defs.map(([key, label, color, dashed]) => ({ name: label, type: 'line', data: keys.map((k) => lag[k][key]), symbol: 'circle', symbolSize: 3, lineStyle: { width: 1.8, color, type: dashed ? 'dashed' : 'solid' }, itemStyle: { color } })),
   });
   pickByPixel(chart, document.getElementById('chart-lag'), 'x', (idx) => {
@@ -4002,6 +3996,18 @@ function provLegendHtml(withStations = true) {
     <div class="legend-chips">${chips}<span class="chip"><i style="background:${PROV_NODATA}"></i>tanpa RS mitra</span></div>${tail}`;
 }
 
+function provinceTip(name) {
+  const p = (DATA.hospitals.provinces || []).find((r) => r.province === name);
+  if (!p) {
+    return `<div class="map-tip-h"><b>${esc(name)}</b></div>`
+      + '<div class="map-tip-s">Tanpa RS mitra</div>';
+  }
+  return `<div class="map-tip-h"><b>${esc(name)}</b></div>`
+    + `<div class="map-tip-n">${fmtInt(p.actual.resp)}<small> kasus</small></div>`
+    + `<div class="map-tip-s">${fmtInt(p.hospitals)} RS · ${fmtInt(p.beds)} tempat tidur</div>`
+    + `<div class="map-tip-s">${fmt(p.per100beds, 0)} kasus per 100 tempat tidur</div>`;
+}
+
 function addChoropleth(map, cho) {
   loadBasemap().then((geo) => {
     if (!geo || !map || (map.isDisposed && map.isDisposed())) return;
@@ -4033,11 +4039,19 @@ function addChoropleth(map, cho) {
         paint: { 'line-color': 'rgba(24,32,72,.30)', 'line-width': 0.8 },
       }, anchor);
       map.__choropleth = { breaks };
+      const tip = map.__napasTip;
       map.on('mousemove', 'prov-fill', (e) => {
         const f = e.features && e.features[0];
         map.getCanvas().style.cursor = f && f.properties.has ? 'pointer' : '';
+        if (!f || !tip) return;
+        // Titik stasiun menang: biarkan tooltip stasiun yang tampil.
+        if (map.queryRenderedFeatures(e.point, { layers: ['stations-hit'] }).length) return;
+        tip.show(provinceTip(f.properties.name), e.point);
       });
-      map.on('mouseleave', 'prov-fill', () => { map.getCanvas().style.cursor = ''; });
+      map.on('mouseleave', 'prov-fill', () => {
+        map.getCanvas().style.cursor = '';
+        if (tip) tip.hide();
+      });
       map.on('click', 'prov-fill', (e) => {
         const f = e.features && e.features[0];
         if (!f || !f.properties.has) return;
@@ -4064,7 +4078,7 @@ function applyProvMetric() {
   });
   ['legend-overview', 'legend-health'].forEach((id) => {
     const el = document.getElementById(id);
-    if (el && el.dataset.choropleth === '1') el.innerHTML = provLegendHtml(el.dataset.dots === '1');
+    if (el && el.dataset.kind === 'choro') el.innerHTML = provLegendHtml(el.dataset.dots === '1');
   });
 }
 
@@ -4082,6 +4096,7 @@ function makeMap(id, rows, opts = {}) {  const el = document.getElementById(id);
   maps.push(map);
   el.__napasMap = map;
   const tip = makeMapTip(el);
+  map.__napasTip = tip;
   const byId = new Map();
   rows.forEach((r) => byId.set(r.id, r));
   map.on('load', () => {
@@ -4168,9 +4183,9 @@ function makeMap(id, rows, opts = {}) {  const el = document.getElementById(id);
   });
   const legend = document.getElementById(id.replace('map', 'legend'));
   if (legend) {
-    legend.dataset.choropleth = opts.choropleth ? '1' : '';
+    legend.dataset.kind = opts.legendKind || (opts.choropleth ? 'choro' : '');
     legend.dataset.dots = rows.length ? '1' : '';
-    legend.classList.toggle('is-choro', !!opts.choropleth);
+    legend.classList.toggle('is-choro', legend.dataset.kind === 'choro');
     if (opts.legend) legend.innerHTML = opts.legend;
   }
   return map;
