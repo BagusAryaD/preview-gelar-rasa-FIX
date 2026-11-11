@@ -61,6 +61,8 @@ const state = {
   compare: [],
   compareA: null,
   compareB: null,
+  provMetric: 'actual',
+  healthTable: 'stasiun',
   tableSort: 'mean',
   tableSearch: '',
   networkSort: 'usable',
@@ -89,6 +91,18 @@ function fmt(v, d = 1) {
   return nf1.format(Number(v));
 }
 function fmtInt(v) { return fmt(v, 0); }
+function fmtDateISO(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '—';
+  return `${Number(m[3])} ${MONTH_NAMES[Number(m[2]) - 1]} ${m[1]}`;
+}
+function unitLabel(raw) {
+  const s = String(raw || '').trim();
+  if (!s || s === '—') return '—';
+  if (s === 'ug/m3') return 'µg/m³';
+  if (s === 'ppm') return 'ppm';
+  return s;
+}
 function average(values) {
   const clean = (values || []).filter((v) => v != null && !Number.isNaN(Number(v)));
   if (!clean.length) return null;
@@ -146,7 +160,7 @@ async function boot() {
     $('#page').innerHTML = `<div class="empty"><div>Library chart belum termuat.</div><div class="card-sub">Periksa koneksi CDN, lalu muat ulang.</div></div>`;
     return;
   }
-  const files = ['meta', 'overview', 'stations', 'time', 'sources', 'health', 'network', 'method'];
+  const files = ['meta', 'overview', 'stations', 'time', 'sources', 'health', 'hospitals', 'network', 'method'];
   try {
     const payloads = await Promise.all(files.map((f) => fetch(`data/${f}.json`).then((r) => {
       if (!r.ok) throw new Error(`${f}.json ${r.status}`);
@@ -159,6 +173,9 @@ async function boot() {
   }
   DATA.stationsById = new Map(DATA.stations.stations.map((s) => [s.id, s]));
   DATA.islands = Array.from(new Set(DATA.stations.stations.map((s) => s.island)));
+  DATA.hospitalsById = new Map((DATA.hospitals.hospitals || []).map((h) => [h.id, h]));
+  DATA.hospitalsByStation = new Map((DATA.hospitals.hospitals || []).map((h) => [h.station, h]));
+  DATA.provincesByName = new Map((DATA.hospitals.provinces || []).map((p) => [p.province, p]));
   parseUrl();
   initShell();
   if (state.story) {
@@ -278,6 +295,13 @@ function initShell() {
   $('#detail-close').addEventListener('click', dismissDetail);
   $('#detail-scrim').addEventListener('click', dismissDetail);
   $('#detail-body').addEventListener('click', (e) => {
+    const hosp = e.target.closest('[data-hospital]');
+    if (hosp) {
+      e.preventDefault();
+      const spec = detailHospital(hosp.dataset.hospital);
+      if (spec) openDetail(spec);
+      return;
+    }
     const st = e.target.closest('[data-station]');
     if (st) { e.preventDefault(); openStationProfile(st.dataset.station); }
   });
@@ -394,7 +418,7 @@ function kpiGo(id) {
     if (spec) openDetail(spec);
     return;
   }
-  go(dest.page);
+  jumpTo(dest.page);
 }
 
 function onPageClick(e) {
@@ -415,6 +439,17 @@ function onPageClick(e) {
     render();
     return;
   }
+  const provMetric = e.target.closest('[data-provmetric]');
+  if (provMetric) {
+    state.provMetric = provMetric.dataset.provmetric === 'per100' ? 'per100' : 'actual';
+    applyProvMetric();
+    return;
+  }
+  const healthTable = e.target.closest('[data-health-table]');
+  if (healthTable) {
+    setHealthTable(healthTable.dataset.healthTable === 'rs' ? 'rs' : 'stasiun');
+    return;
+  }
   const src = e.target.closest('[data-source]');
   if (src) {
     state.sourceMode = src.dataset.source;
@@ -432,6 +467,7 @@ function onPageClick(e) {
     e.preventDefault();
     const a = act.dataset.action;
     if (a === 'export-station') exportStation();
+    if (a === 'back-origin') returnToOrigin();
     if (a === 'compare-station') {
       const spec = detailCompare();
       if (spec) openDetail(spec);
@@ -480,7 +516,7 @@ function monthFull(m) {
 }
 
 const PAGE_NAMES = {
-  ringkasan: 'Ringkasan', waktu: 'Waktu', wilayah: 'Wilayah', sumber: 'Sumber',
+  ringkasan: 'Ringkasan', waktu: 'Waktu', wilayah: 'Stasiun', sumber: 'Sumber',
   kesehatan: 'Kesehatan', jaringan: 'Jaringan', metodologi: 'Metodologi',
 };
 
@@ -1247,6 +1283,96 @@ function detailHealthStation(id) {
 }
 
 /* ---------------------------------------------------------- detail: jaringan */
+function provToggleHtml() {
+  const mk = (key, label) => `<button type="button" data-provmetric="${key}" class="${state.provMetric === key ? 'active' : ''}" aria-pressed="${state.provMetric === key}">${label}</button>`;
+  return `<div class="seg" role="group" aria-label="Metrik peta provinsi">${mk('actual', 'Kasus')}${mk('per100', 'per 100 tempat tidur')}</div>`;
+}
+
+function per100Unit() {
+  const days = (DATA.hospitals.meta && DATA.hospitals.meta.days) || '';
+  return `kasus per 100 tempat tidur · ${days} hari`;
+}
+
+function hospitalRows() {
+  const rows = DATA.hospitals.hospitals || [];
+  if (state.island === 'Semua') return rows;
+  return rows.filter((h) => h.island === state.island);
+}
+
+function detailHospital(id) {
+  const h = DATA.hospitalsById.get(id);
+  if (!h) return null;
+  const labels = Object.fromEntries((DATA.hospitals.outcomes || []).map((o) => [o.key, o.label]));
+  const outcomes = (DATA.hospitals.outcomes || []).map((o) => ({ key: o.key, label: labels[o.key], value: h.excess[o.key], color: o.key === 'resp' ? C.navy : C.grey2, display: `+${fmtInt(h.excess[o.key])}` }));
+  const months = (h.monthly || []).slice(-13);
+  const max = Math.max(...months.map((m) => m.v || 0), 1);
+  const spark = months.map((m) => `<span class="hspark-bar${m.partial ? ' partial' : ''}" style="height:${Math.max(3, (m.v / max) * 100)}%" data-tip="${esc(monthFull(m.m))} · ${fmtInt(m.v)} kunjungan"></span>`).join('');
+  const body = `
+    ${detailMetrics([
+      ['Kasus', fmtInt(h.actual.resp), 'kasus'],
+      ['Kelebihan', `+${fmtInt(h.excess.resp)}`, 'kasus'],
+      ['Kasus per 100 tempat tidur', fmt(h.per100beds, 0), 'kasus'],
+    ])}
+    <div class="detail-list">
+      <div class="row"><span>Tempat tidur</span><b>${fmtInt(h.beds)}</b></div>
+      <div class="row"><span>Kelas</span><b>${esc(h.kelas)}</b></div>
+      <div class="row"><span>Kota</span><b>${esc(h.city)} · ${esc(h.kecamatan)}</b></div>
+      <div class="row"><span>Provinsi</span><b>${esc(h.province)}</b></div>
+      <div class="row"><span>Stasiun</span><b class="mono">${esc(h.station || '—')}</b></div>
+      <div class="row"><span>Kelebihan per 100 tempat tidur</span><b>${fmt(h.per100beds_excess, 0)} kasus</b></div>
+    </div>
+    <div class="detail-block"><div class="detail-label">Kunjungan respirasi bulanan</div><div class="hspark">${spark}</div><div class="detail-note">${months.length} bulan terakhir · batang pucat = bulan parsial</div></div>
+    <div class="detail-block"><div class="detail-label">Kelebihan per outcome · ${h.days} hari</div>${detailBars(outcomes)}</div>
+    <div class="detail-note">Kasus = kunjungan tercatat, bukan kasus yang diatribusikan ke PM2.5.</div>
+    <button class="primary-btn detail-cta" type="button" data-station="${esc(h.station || '')}">Buka profil stasiun</button>`;
+  return {
+    key: `hospital:${h.id}`,
+    kicker: `${h.kelas} · ${h.island}`,
+    title: h.name,
+    chip: h.city,
+    body,
+  };
+}
+
+function detailProvince(name) {
+  const p = DATA.provincesByName.get(name);
+  if (!p) return null;
+  const list = hospitalRows().filter((h) => h.province === name).slice().sort((a, b) => (b.per100beds || 0) - (a.per100beds || 0));
+  const max = Math.max(...list.map((h) => h.per100beds || 0), 1);
+  const bars = list.map((h) => `<button class="drow" type="button" data-hospital="${esc(h.id)}">
+      <span class="drow-label sans">${esc(h.name)}</span>
+      <span class="drow-track"><span style="width:${Math.max(3, (h.per100beds || 0) / max * 100)}%;background:${C.terra}"></span></span>
+      <span class="drow-value">${fmt(h.per100beds, 0)}</span>
+    </button>`).join('');
+  const body = `
+    ${detailMetrics([
+      ['Kasus', fmtInt(p.actual.resp), 'kasus'],
+      ['Kelebihan', `+${fmtInt(p.excess.resp)}`, 'kasus'],
+      ['Kasus per 100 tempat tidur', fmt(p.per100beds, 0), 'kasus'],
+    ])}
+    <div class="detail-list">
+      <div class="row"><span>Rumah sakit</span><b>${p.hospitals}</b></div>
+      <div class="row"><span>Tempat tidur</span><b>${fmtInt(p.beds)}</b></div>
+      <div class="row"><span>Kelebihan per 100 tempat tidur</span><b>${fmt(p.per100beds_excess, 0)} kasus</b></div>
+      <div class="row"><span>Jendela</span><b>${esc(DATA.hospitals.meta.window)} · ${p.days || DATA.hospitals.meta.days} hari</b></div>
+    </div>
+    <div class="detail-block"><div class="detail-label">Kasus per 100 tempat tidur · per RS</div><div class="dlist wide">${bars || '<div class="detail-note">Tidak ada RS mitra di provinsi ini.</div>'}</div></div>
+    <div class="detail-note">Klik baris untuk membuka rumah sakit. Warna provinsi mengikuti RS mitra, bukan sensus kasus.</div>
+    <button class="primary-btn detail-cta" type="button" data-detail-go="kesehatan">Buka Kesehatan</button>`;
+  return {
+    key: `province:${name}`,
+    kicker: `Provinsi · ${p.island || 'Indonesia'}`,
+    title: name,
+    chip: name,
+    body,
+    after: (root) => {
+      const cta = root.querySelector('[data-detail-go]');
+      if (cta) cta.addEventListener('click', () => jumpTo('kesehatan'));
+    },
+  };
+}
+
+
 function detailQc(segment) {
   const qc = DATA.network.qc_detail || {};
   const totals = DATA.network.qc_totals || {};
@@ -1397,9 +1523,12 @@ function afterRender() {
 }
 
 function pageHead(title, meta, actions = '') {
+  const back = state.origin
+    ? `<button class="ghost-btn back-btn" type="button" data-action="back-origin">← ${esc(PAGE_NAMES[state.origin.page] || 'Kembali')}</button>`
+    : '';
   return `<div class="page-head">
     <div><h1 class="page-title">${title}</h1><div class="page-meta">${meta}</div></div>
-    <div class="page-actions">${actions}</div>
+    <div class="page-actions">${back}${actions}</div>
   </div>`;
 }
 
@@ -1484,26 +1613,57 @@ function overviewKpis() {
   const scopeName = state.station || (state.island === 'Semua' ? 'nasional' : state.island);
   const resp = scopedHealth ? scopedHealth.resp : health.excess.resp;
   const respDays = scopedHealth ? scopedHealth.days : health.days;
+  const ratioRow = (DATA.overview.kpis || []).find((k) => k.id === 'national');
+  const ratio = ratioRow && ratioRow.ratio ? `${fmt(ratioRow.ratio, 2)}× 2024` : '—';
   return [
     {
       id: 'mean', label: 'Rata-rata PM2.5', value: scope.mean, unit: 'µg/m³',
       baseline: catBadge(cat), window: '1 Sep–14 Okt',
       note: `${scopeName} · n=${fmtInt(scope.days)} hari-stasiun · ${scope.stations} stasiun · exclude JMB-02/MER-01`,
+      tip: [
+        ['Definisi', 'Rata-rata PM2.5 harian tiap stasiun, lalu dirata-rata'],
+        ['Cakupan', `${fmtInt(scope.days)} hari-stasiun · ${scope.stations} stasiun`],
+        ['Ambang', 'PP 55 · WHO 15 µg/m³'],
+        ['Pembanding', ratio],
+      ],
+      tipNote: 'JMB-02 dan MER-01 dikeluarkan (status bukan Active).',
     },
     {
       id: 'above55', label: 'Hari melampaui 55 µg/m³', value: scope.above55_pct, unit: '%',
       baseline: `${fmtInt(scope.severe_n)} hari >150,4`, window: '1 Sep–14 Okt',
       note: `${scopeName} · ${fmtInt(scope.above55_n)} hari-stasiun >55 dari ${fmtInt(scope.days)} hari`,
+      tip: [
+        ['Definisi', 'Porsi hari-stasiun dengan PM2.5 di atas 55 µg/m³'],
+        ['Hitung', `${fmtInt(scope.above55_n)} dari ${fmtInt(scope.days)} hari-stasiun`],
+        ['Ambang', '55 = batas PP · 150,4 = ISPU Tidak Sehat'],
+        ['Pembanding', ratio],
+      ],
+      tipNote: 'Satu hari-stasiun = satu stasiun pada satu hari.',
     },
     {
       id: 'heaviest', label: 'Stasiun terberat', value: topLabel, unit: topStation ? ` ${topStation.id}` : '',
       baseline: `${categoryFromPm(topStation ? topStation.mean_2026 : 0)} · ISPU`, window: '1 Agu–14 Okt',
       note: topStation ? `${topStation.id} · ${topStation.lower_bound ? '≥' : ''}${fmt(topStation.mean_2026, 1)} µg/m³ · 1 Agu–14 Okt 2026` : 'Tidak ada stasiun pada filter',
+      tip: topStation ? [
+        ['Stasiun', topStation.id],
+        ['Kota', topStation.city],
+        ['Mean', `${topStation.lower_bound ? '≥' : ''}${fmt(topStation.mean_2026, 1)} µg/m³`],
+        ['Peringkat', `1 dari ${top.length} stasiun`],
+        ['Status', topStation.status],
+      ] : [],
+      tipNote: topStation ? 'Nilai batas bawah bila sensor menyentuh 999.' : 'Tidak ada stasiun pada filter ini.',
     },
     {
       id: 'resp', label: 'Estimasi kelebihan respirasi', value: resp, unit: 'kasus',
       baseline: 'estimasi asosiatif', window: '1 Agu–14 Okt',
       note: `${scopeName} · 1 Agu–14 Okt 2026 · ${respDays} hari · aktual − expected; bukan kausal`,
+      tip: [
+        ['Definisi', 'Aktual − expected kunjungan respirasi'],
+        ['Expected', 'Rata-rata harian Jan–Jun 2026 × jumlah hari'],
+        ['Cakupan', `${respDays} hari · rumah sakit mitra`],
+        ['Sifat', 'Asosiatif, bukan kausal'],
+      ],
+      tipNote: 'Kunjungan rumah sakit, bukan kasus yang diatribusikan ke PM2.5.',
     },
   ];
 }
@@ -1531,21 +1691,30 @@ function kpiIcon(id) {
   return `<span class="kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${icons[id] || icons.mean}</svg></span>`;
 }
 
+function kpiTipHtml(k) {
+  const rows = k.tip || [];
+  const head = `<div class="tip-title">${esc(k.label)}</div>`;
+  if (!rows.length) return `${head}<div class="tip-note">${esc(k.note || '')}</div>`;
+  const body = rows.map(([a, b]) => `<div class="tip-row"><span>${esc(a)}</span><b>${esc(b)}</b></div>`).join('');
+  return `${head}<div class="tip-rows">${body}</div>${k.tipNote ? `<div class="tip-note">${esc(k.tipNote)}</div>` : ''}`;
+}
+
 function kpiCard2(k) {
   const value = k.id === 'resp' ? fmtInt(k.value) : k.value;
   const est = k.id === 'resp';
   const valHtml = typeof value === 'number' ? fmt(value, 1) : value;
   const dest = KPI_DEST[k.id];
+  const tipAttr = `data-tip-html="${esc(kpiTipHtml(k))}" aria-label="Info ${esc(k.label)}"`;
   if (!dest) {
     return `<div class="kpi" data-id="${k.id}">
-      <div class="kpi-top">${kpiIcon(k.id)}<div class="kpi-label">${k.label}</div><span class="info" tabindex="0" data-tip="${esc(k.note)}">i</span></div>
+      <div class="kpi-top">${kpiIcon(k.id)}<div class="kpi-label">${k.label}</div><span class="info" tabindex="0" ${tipAttr}>i</span></div>
       <div class="kpi-value-row"><span class="kpi-value${k.id === 'heaviest' ? ' small' : ''}">${valHtml}</span><span class="kpi-unit">${k.unit}</span></div>
       <div class="kpi-bottom"><span class="kpi-base ${est ? 'est' : ''}">${k.baseline}</span>${k.window ? `<span class="kpi-window">${k.window}</span>` : ''}</div>
     </div>`;
   }
   const destLabel = `Buka ${PAGE_NAMES[dest.page] || 'rincian'}`;
   return `<div class="kpi is-link" data-id="${k.id}" data-kpi="${k.id}" role="link" tabindex="0" aria-label="${esc(`${k.label}: ${valHtml} ${k.unit || ''} — ${destLabel}`)}">
-    <div class="kpi-top">${kpiIcon(k.id)}<div class="kpi-label">${k.label}</div><span class="info" tabindex="0" data-tip="${esc(k.note)}">i</span></div>
+    <div class="kpi-top">${kpiIcon(k.id)}<div class="kpi-label">${k.label}</div><span class="info" tabindex="0" ${tipAttr}>i</span></div>
     <div class="kpi-value-row"><span class="kpi-value${k.id === 'heaviest' ? ' small' : ''}">${valHtml}</span><span class="kpi-unit">${k.unit}</span></div>
     <div class="kpi-bottom"><span class="kpi-base ${est ? 'est' : ''}">${k.baseline}</span>${k.window ? `<span class="kpi-window">${k.window}</span>` : ''}</div>
   </div>`;
@@ -1612,7 +1781,7 @@ function renderOverview() {
     <div class="kpi-row">${kpis}</div>
     <div class="grid-55">
       <section class="card map-card h-420">
-        <div class="card-head"><div class="card-title">Peta hotspot</div><div class="card-head-right"><div class="card-sub">ISPU dominan · 1 Agu–14 Okt 2026</div></div></div>
+        <div class="card-head"><div class="card-title">Peta hotspot</div><div class="card-head-right">${provToggleHtml()}</div></div>
         <div class="card-body"><div class="map" id="map-overview"></div><div class="map-legend" id="legend-overview"></div></div>
       </section>
       ${card(trendTitle, 'µg/m³ · bulanan · garis PP 55 & WHO 15', `<div class="chart" id="chart-trend"></div>`, { cls: 'h-420', right: `<div class="card-sub">P95 ${fmt(trend.p95, 1)} · Okt ${trend.partialDays} hari</div>` })}
@@ -1620,7 +1789,7 @@ function renderOverview() {
     <div class="grid-12">
       ${card('Ranking pulau', 'µg/m³ · 1 Agu–14 Okt 2026', `<div class="chart" id="chart-rank-island"></div>`, { cls: 'span-3 h-320' })}
       ${card('Siklus 24 jam', 'indeks % · 100 = rata-rata harian', `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320' })}
-      ${card('Observed vs expected', `kasus · ${healthYears()[2].days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual / expected</div>' })}
+      ${card('Kasus per kategori', `kasus · ${healthYears()[2].days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual / expected</div>' })}
     </div>
     <div class="grid-12">
       ${card(islandCompTitle, '% hari-stasiun', `<div class="chart" id="chart-ispu-island"></div>` + ispuStackLegend(), { cls: 'span-6 h-280' })}
@@ -1661,10 +1830,11 @@ function afterOverview() {
         hot.setFilter('stations-selected', ['==', ['get', 'id'], id]);
       }
     },
-    legend: ispuLegendFull(),
+    legend: provLegendHtml(),
     labels: true,
     islands: false,
     zoom: true,
+    choropleth: { onProvince: (name) => { const spec = detailProvince(name); if (spec) openDetail(spec); } },
   });
   makeMonthlyChart('chart-trend', trendRows(), {
     compact: true,
@@ -1708,8 +1878,9 @@ function afterOverview() {
     horizontal: true,
     color: (r) => (selIsland ? (r.id === selIsland ? CAT_COLORS[r.cat] || C.navy : 'rgba(24,32,72,.18)') : (CAT_COLORS[r.cat] || C.navy)),
     label: (r) => fmt(r.value, 1),
-    grid: { left: 78, right: 42, top: 6, bottom: 22 },
+    grid: { left: 78, right: 54, top: 18, bottom: 22 },
     yFont: 8.5,
+    pp55: true,
     onPick: (r) => { const spec = detailIsland(r.id); if (spec) openDetail(spec); },
   });
 }
@@ -2170,7 +2341,7 @@ function renderGeo() {
   if (stId) state.station = stId;
   const st = DATA.stationsById.get(stId) || null;
   const meta = `${DATA.meta.periods.haze} · ${filteredStations().length} stasiun · ${DATA.meta.periods.data_end}`;
-  return `${pageHead('Wilayah', meta, `<span class="pill">1 Agu–14 Okt 2026</span>`)}
+  return `${pageHead('Stasiun', meta, `<span class="pill">1 Agu–14 Okt 2026</span>`)}
   <div class="page-body">
     <div class="grid-12">
       <section class="card span-7 h-420">
@@ -2390,12 +2561,26 @@ function renderProfile(st) {
   const rank = idx >= 0 ? `${idx + 1}/${ranked.length}` : '—';
   const nat = DATA.overview.kpis.find((k) => k.id === 'national').value;
   const vs = st.mean_2026 == null ? null : st.mean_2026 / nat;
+  const sensor = st.sensor;
+  const instruments = st.instruments || [];
+  const sensorTone = sensor ? (sensor.status === 'Active' ? 'baik' : sensor.status === 'Intermittent' ? 'perhatian' : 'terbatas') : '';
+  const sensorBlock = sensor ? `
+    <div class="sensor-block">
+      <div class="sensor-head"><span class="sensor-title">Sensor</span><span class="badge ${sensorTone}">${esc(sensor.status)}</span></div>
+      <div class="sensor-meta"><b class="mono">${esc(sensor.id)}</b> · ${esc(sensor.model)}</div>
+      <div class="sensor-meta">${esc(sensor.mounting)} · terpasang ${esc(fmtDateISO(sensor.installed))}</div>
+      <details class="sensor-acc">
+        <summary>${instruments.length} instrumen & satuan</summary>
+        <div class="sensor-rows">${instruments.map((i) => `<div class="sensor-row"><span>${esc(i.pollutant)}</span><span class="sensor-eq">${esc(i.equipment)}</span><span class="sensor-unit">${i.converted ? '<span class="badge est">ppm → µg/m³</span>' : esc(unitLabel(i.unit_raw))}</span></div>`).join('')}</div>
+      </details>
+    </div>` : '';
   return `<div class="profile">
     <div class="profile-head">
       <div><div class="profile-name">${esc(st.id)}</div><div class="profile-sub">${esc(st.city)} · ${esc(st.province)}</div></div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">${catBadge(st.ispu_dominant, st.ispu_share)}${statusBadge(st.status)}${st.lower_bound ? '<span class="badge est">≥999 lower bound</span>' : ''}</div>
     </div>
     <div class="metric-grid">${rows.map(([k, v, u]) => `<div class="metric"><div class="metric-label">${k}</div><div class="metric-value">${v} <small>${u}</small></div></div>`).join('')}</div>
+    ${sensorBlock}
     <div class="detail-list">
       <div class="row"><span>Peringkat 2026</span><b>${rank}</b></div>
       <div class="row"><span>Vs nasional</span><b>${vs == null ? '—' : fmt(vs, 1) + '×'}</b></div>
@@ -2682,17 +2867,31 @@ function renderHealth() {
   const under5Share = totalResp ? totalUnder5 / totalResp * 100 : null;
   const over60Share = totalResp ? totalOver60 / totalResp * 100 : null;
   const lag0 = healthLag()['0'] ? healthLag()['0'].resp : null;
+  const healthTab = state.healthTable === 'rs' ? 'rs' : 'stasiun';
+  const hospitalMeta = DATA.hospitals.meta;
+  const stationPerHospital = new Set((DATA.hospitals.hospitals || []).map((h) => h.station)).size;
   const kpis = [
-    { id: 'total', label: 'Total kunjungan respirasi', value: totalResp, unit: 'kasus', baseline: `${y.days} hari · 27 RS`, window: '1 Agu–14 Okt', note: `aktual ${scope} · 1 Agu–14 Okt 2026` },
-    { id: 'under5', label: 'Balita', value: under5Share, unit: '%', baseline: `${fmtInt(totalUnder5)} kunjungan`, window: 'share respirasi', note: 'share kunjungan respirasi balita dari total respirasi' },
-    { id: 'over60', label: 'Lansia', value: over60Share, unit: '%', baseline: `${fmtInt(totalOver60)} kunjungan`, window: 'share respirasi', note: 'share kunjungan respirasi lansia dari total respirasi' },
-    { id: 'lag0', label: 'Asosiasi lag 0', value: lag0, unit: '', baseline: 'r anomali · hari sama', window: '2024–2026', note: 'Korelasi anomali PM2.5 dan kunjungan respirasi pada hari yang sama' },
+    { id: 'total', label: 'Total kunjungan respirasi', value: totalResp, unit: 'kasus', baseline: `${y.days} hari · ${DATA.hospitals.meta.count} RS`, window: '1 Agu–14 Okt', note: `aktual ${scope} · 1 Agu–14 Okt 2026`,
+      tip: [['Definisi', 'Jumlah kunjungan respirasi tercatat'], ['Cakupan', `${y.days} hari · ${DATA.hospitals.meta.count} RS · ${DATA.hospitals.meta.beds_total.toLocaleString('id-ID')} tempat tidur`], ['Sifat', 'Beban layanan, bukan insidensi penduduk'], ['Pembanding', 'baseline Jan–Jun 2026']],
+      tipNote: 'Bukan kasus yang diatribusikan ke PM2.5.' },
+    { id: 'under5', label: 'Balita', value: under5Share, unit: '%', baseline: `${fmtInt(totalUnder5)} kunjungan`, window: 'share respirasi', note: 'share kunjungan respirasi balita dari total respirasi',
+      tip: [['Definisi', 'Kunjungan balita ÷ total kunjungan respirasi'], ['Hitung', `${fmtInt(totalUnder5)} dari ${fmtInt(totalResp)} kunjungan`], ['Cakupan', `${y.days} hari · ${scope}`], ['Sifat', 'Asosiatif']] },
+    { id: 'over60', label: 'Lansia', value: over60Share, unit: '%', baseline: `${fmtInt(totalOver60)} kunjungan`, window: 'share respirasi', note: 'share kunjungan respirasi lansia dari total respirasi',
+      tip: [['Definisi', 'Kunjungan usia 60+ ÷ total kunjungan respirasi'], ['Hitung', `${fmtInt(totalOver60)} dari ${fmtInt(totalResp)} kunjungan`], ['Cakupan', `${y.days} hari · ${scope}`], ['Sifat', 'Asosiatif']] },
+    { id: 'lag0', label: 'Asosiasi lag 0', value: lag0, unit: '', baseline: 'r anomali · hari sama', window: '2024–2026', note: 'Korelasi anomali PM2.5 dan kunjungan respirasi pada hari yang sama',
+      tip: [['Definisi', 'Pearson anomali PM2.5 vs anomali kunjungan, hari sama'], ['Cakupan', '2024–2026 · minimal 30 hari tumpang tindih'], ['Rentang', '−1 sampai +1'], ['Sifat', 'Asosiatif, bukan kausal']] },
   ].map((k) => ({ ...k, value: k.id === 'lag0' ? fmtR(k.value) : k.id === 'total' ? fmtInt(k.value) : fmt(k.value, 1) })).map(kpiCard2).join('');
   return `${pageHead('Kesehatan', meta, `<span class="badge est" data-tip="Estimasi asosiatif: aktual − expected. Expected = rata-rata harian Jan–Jun tahun yang sama × jumlah hari jendela.">Estimasi asosiatif</span><button class="ghost-btn" type="button" data-action="download-health">Unduh CSV</button>`)}
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
+    <div class="rs-strip">
+      <span><b>${fmtInt(hospitalMeta.count)}</b> rumah sakit mitra</span>
+      <span><b>${fmtInt(hospitalMeta.beds_total)}</b> tempat tidur</span>
+      <span><b>${fmt(hospitalMeta.count / Math.max(1, stationPerHospital), 0)}</b> RS per stasiun</span>
+      <span class="rs-strip-note">${esc(hospitalMeta.window)} · ${hospitalMeta.days} hari</span>
+    </div>
     <div class="grid-12">
-      ${card('Observed vs expected', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual / expected</div>' })}
+      ${card('Kasus per kategori', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual / expected</div>' })}
       ${card('Kelebihan per tahun', 'kasus', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">2024–2026</div>' })}
     </div>
     <div class="grid-12">
@@ -2702,12 +2901,30 @@ function renderHealth() {
       </section>
     </div>
     <div class="grid-12">
+      <section class="card map-card span-7 h-320">
+        <div class="card-head"><div class="card-title">Peta kasus rumah sakit</div><div class="card-head-right">${provToggleHtml()}</div></div>
+        <div class="card-body"><div class="map" id="map-health"></div><div class="map-legend" id="legend-health"></div></div>
+      </section>
+      ${card('Beban vs respons', 'X mean PM2.5 · Y r lag0', `<div class="chart" id="chart-health-scatter"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">µg/m³ · r</div>' })}
+    </div>
+    <div class="grid-12">
       ${card('Lag 0–14', 'r anomali', `<div class="chart" id="chart-lag"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">r · lag 0–14</div>' })}
       ${card('Kelompok rentan', 'kunjungan harian · bulanan', `<div class="chart" id="chart-vulnerable"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">bulanan</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Top 10 stasiun', 'r lag 0 tertinggi', `<div class="table-wrap" style="height:auto;max-height:320px"><table class="data" id="health-top-table"></table></div>`, { cls: 'span-7 h-auto', right: '<div class="card-sub">lag 0</div>' })}
-      ${card('Beban vs respons', 'X mean PM2.5 · Y r lag0', `<div class="chart" id="chart-health-scatter"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">µg/m³ · r</div>' })}
+      <section class="card span-12 h-auto">
+        <div class="card-head">
+          <div class="card-title">Peringkat</div>
+          <div class="card-head-right">
+            <div class="seg" role="group" aria-label="Pilih tabel">
+              <button type="button" data-health-table="stasiun" class="${healthTab === 'stasiun' ? 'active' : ''}" aria-pressed="${healthTab === 'stasiun'}">Stasiun</button>
+              <button type="button" data-health-table="rs" class="${healthTab === 'rs' ? 'active' : ''}" aria-pressed="${healthTab === 'rs'}">Rumah sakit</button>
+            </div>
+            <div class="card-sub" id="health-table-sub">${healthTab === 'rs' ? per100Unit() : 'r lag 0 tertinggi'}</div>
+          </div>
+        </div>
+        <div class="card-body"><div class="table-wrap" style="height:auto;max-height:360px"><table class="data" id="health-top-table"></table></div></div>
+      </section>
     </div>
     <div class="grid-12">
       <section class="card span-12 h-auto">
@@ -2722,6 +2939,7 @@ function afterHealth() {
   makeObservedChart();
   makeHealthYearChart();
   makeHealthMonthlyCharts();
+  makeHealthCaseMap();
   makeLagMultiChart();
   makeVulnerableChart();
   renderHealthTopTable();
@@ -2868,9 +3086,38 @@ function makeLagMultiChart() {
 }function renderHealthTopTable() {
   const el = $('#health-top-table');
   if (!el) return;
+  if (state.healthTable === 'rs') {
+    const rows = hospitalRows().slice().sort((a, b) => (b.per100beds || 0) - (a.per100beds || 0)).slice(0, 10);
+    el.innerHTML = `<thead><tr><th>Rumah sakit</th><th>Kota</th><th>Kelas</th><th class="num">Tempat tidur</th><th class="num">Kasus</th><th class="num">Kasus per 100 tempat tidur</th><th class="num">Kelebihan</th></tr></thead><tbody>${rows.map((h) => `<tr data-hospital-row="${esc(h.id)}" tabindex="0"><td>${esc(h.name)}</td><td>${esc(h.city)}</td><td>${esc(h.kelas)}</td><td class="num">${fmtInt(h.beds)}</td><td class="num">${fmtInt(h.actual.resp)}</td><td class="num">${fmt(h.per100beds, 0)}</td><td class="num">${fmtInt(h.excess.resp)}</td></tr>`).join('')}</tbody>`;
+    bindRowActivate('#health-top-table tbody tr', 'data-hospital-row', detailHospital);
+    return;
+  }
   const rows = healthStations().slice().sort((a, b) => (b.lag0_resp || 0) - (a.lag0_resp || 0)).slice(0, 10);
   el.innerHTML = `<thead><tr><th>Stasiun</th><th>Pulau</th><th class="num">Actual</th><th class="num">Excess</th><th class="num">r lag 0</th><th class="num">Hari episode</th><th>Status</th></tr></thead><tbody>${rows.map((r) => `<tr data-health-station="${esc(r.station)}" tabindex="0"><td class="mono">${esc(r.station)}</td><td>${esc(r.island)}</td><td class="num">${fmtInt(r.resp_actual)}</td><td class="num">${fmtInt(r.resp)}</td><td class="num">${r.lag0_resp == null ? '—' : fmtR(r.lag0_resp)}</td><td class="num">${fmtInt(r.episode_days)}</td><td><span class="st ${statusSlug(r.status)}">${esc(r.status)}</span></td></tr>`).join('')}</tbody>`;
   bindRowActivate('#health-top-table tbody tr', 'data-health-station', detailHealthStation);
+}
+
+function setHealthTable(kind) {
+  state.healthTable = kind === 'rs' ? 'rs' : 'stasiun';
+  $$('[data-health-table]').forEach((b) => {
+    const on = b.dataset.healthTable === state.healthTable;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  const sub = $('#health-table-sub');
+  if (sub) sub.textContent = state.healthTable === 'rs' ? per100Unit() : 'r lag 0 tertinggi';
+  renderHealthTopTable();
+}
+
+function makeHealthCaseMap() {
+  const el = document.getElementById('map-health');
+  if (!el) return null;
+  return makeMap('map-health', [], {
+    legend: provLegendHtml(false),
+    islands: false,
+    zoom: true,
+    choropleth: { onProvince: (name) => { const spec = detailProvince(name); if (spec) openDetail(spec); } },
+  });
 }
 function makeHealthScatter() {
   const st = DATA.stationsById;
@@ -3234,14 +3481,14 @@ function monthLabel(m) {
 }
 
 // Shared threshold line for charts whose value axis is µg/m³.
-function ppItem(axis, value, text, color) {
+function ppItem(axis, value, text, color, pos = 'insideEndTop') {
   return {
     [axis === 'y' ? 'yAxis' : 'xAxis']: value,
     lineStyle: { color, type: [4, 3], width: 1, opacity: 0.9 },
     label: {
       show: true,
       formatter: text,
-      position: 'insideEndTop',
+      position: pos,
       rotate: 0,
       distance: 3,
       fontFamily: 'IBM Plex Mono',
@@ -3381,7 +3628,7 @@ function makeBarChart(id, rows, opts = {}) {
       showBackground: horizontal && opts.track !== false,
       backgroundStyle: { color: 'rgba(24,32,72,.045)', borderRadius: 8 },
       label: { show: true, position: horizontal ? 'right' : 'top', fontFamily: 'IBM Plex Mono', fontSize: opts.labelFont || 9, color: C.navy, formatter: (p) => opts.label ? opts.label(rows[p.dataIndex]) : fmt(p.value, 1) },
-      markLine: opts.pp55 ? markLinePP(ppItem(horizontal ? 'x' : 'y', 55, 'PP 55', C.yellow)) : undefined,
+      markLine: opts.pp55 ? markLinePP(ppItem(horizontal ? 'x' : 'y', 55, 'PP 55', C.yellow, horizontal ? 'start' : 'insideEndTop')) : undefined,
     }],
   });
   if (chart && opts.onPick) {
@@ -3636,7 +3883,7 @@ function detailSiteClass(cls) {
       <div class="row"><span>P95 2026 rata-rata</span><b>${fmt(p95, 1)} µg/m³</b></div>
     </div>
     <div class="detail-block"><div class="detail-label">Stasiun · mean 2026</div>${detailBars(sorted.map((r) => ({ label: r.id, value: r.mean_2026 || 0, color: CAT_COLORS[categoryFromPm(r.mean_2026)] || C.navy })))}</div>
-    <button class="primary-btn detail-cta" type="button" data-detail-go="wilayah">Buka Wilayah</button>`;
+    <button class="primary-btn detail-cta" type="button" data-detail-go="wilayah">Buka Stasiun</button>`;
   return {
     key: `class:${cls}`,
     kicker: 'Kelas lokasi · 1 Agu–14 Okt 2026',
@@ -3687,8 +3934,141 @@ function addBasemap(map, beforeId) {
   });
 }
 
-function makeMap(id, rows, opts = {}) {
-  const el = document.getElementById(id);
+/* ------------------------------------------------ province choropleth */
+const PROV_RAMP = ['#F8E9E0', '#F0CBB8', '#DFA184', '#C56C4C', '#9C3F26'];
+const PROV_NODATA = 'rgba(198,205,219,.62)';
+
+function provRows() {
+  return DATA.hospitals.provinces || [];
+}
+
+function provMetricKey() {
+  return state.provMetric === 'per100' ? 'per100beds' : 'actual';
+}
+
+function provValue(p) {
+  return state.provMetric === 'per100' ? p.per100beds : p.actual.resp;
+}
+
+function provUnitLabel() {
+  const days = (DATA.hospitals.meta && DATA.hospitals.meta.days) || '';
+  return state.provMetric === 'per100'
+    ? `kasus per 100 tempat tidur · ${days} hari`
+    : `kasus · ${days} hari`;
+}
+
+function quantileBreaks(values, steps = 5) {
+  const arr = values.filter((v) => v != null && !Number.isNaN(v)).slice().sort((a, b) => a - b);
+  if (arr.length < 2) return [];
+  const out = [];
+  for (let i = 1; i < steps; i += 1) {
+    const pos = ((arr.length - 1) * i) / steps;
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    const v = arr[lo] + (arr[hi] - arr[lo]) * (pos - lo);
+    out.push(Math.max(1, Math.round(v)));
+  }
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+
+function provBreaks() {
+  return quantileBreaks(provRows().map(provValue), PROV_RAMP.length);
+}
+
+function provFillExpr(breaks) {
+  const key = state.provMetric === 'per100' ? 'p' : 'a';
+  let expr = ['step', ['get', key], PROV_RAMP[0]];
+  breaks.forEach((b, i) => { expr = expr.concat([b, PROV_RAMP[Math.min(i + 1, PROV_RAMP.length - 1)]]); });
+  return ['case', ['==', ['get', 'has'], 0], PROV_NODATA, expr];
+}
+
+function provLegendTitle() {
+  const days = (DATA.hospitals.meta && DATA.hospitals.meta.days) || '';
+  return state.provMetric === 'per100'
+    ? `Kasus per 100 tempat tidur · ${days} hari`
+    : `Kasus RS mitra · ${days} hari`;
+}
+
+function provLegendHtml(withStations = true) {
+  const breaks = provBreaks();
+  const edges = [0, ...breaks];
+  const chips = edges.map((b, i) => {
+    const next = edges[i + 1];
+    const label = next == null ? `≥ ${fmtInt(b)}` : `${fmtInt(b)}–${fmtInt(next)}`;
+    return `<span class="chip"><i style="background:${PROV_RAMP[i]}"></i>${label}</span>`;
+  }).join('');
+  const tail = withStations ? '<div class="legend-sub">titik = stasiun · ISPU</div>' : '';
+  return `<div class="map-legend-title">${esc(provLegendTitle())}</div>
+    <div class="legend-chips">${chips}<span class="chip"><i style="background:${PROV_NODATA}"></i>tanpa RS mitra</span></div>${tail}`;
+}
+
+function addChoropleth(map, cho) {
+  loadBasemap().then((geo) => {
+    if (!geo || !map || (map.isDisposed && map.isDisposed())) return;
+    try {
+      if (map.getSource('provcases')) return;
+      const byName = new Map(provRows().map((p) => [p.province, p]));
+      const features = (geo.features || []).map((f) => {
+        const name = f.properties.name;
+        const p = byName.get(name) || null;
+        return {
+          type: 'Feature',
+          geometry: f.geometry,
+          properties: { name, has: p ? 1 : 0, a: p ? p.actual.resp : 0, p: p ? p.per100beds || 0 : 0 },
+        };
+      });
+      const breaks = provBreaks();
+      map.addSource('provcases', { type: 'geojson', data: { type: 'FeatureCollection', features } });
+      const anchor = map.getLayer('stations-halo') ? 'stations-halo' : undefined;
+      map.addLayer({
+        id: 'prov-fill',
+        type: 'fill',
+        source: 'provcases',
+        paint: { 'fill-color': provFillExpr(breaks), 'fill-opacity': 0.72 },
+      }, anchor);
+      map.addLayer({
+        id: 'prov-line',
+        type: 'line',
+        source: 'provcases',
+        paint: { 'line-color': 'rgba(24,32,72,.30)', 'line-width': 0.8 },
+      }, anchor);
+      map.__choropleth = { breaks };
+      map.on('mousemove', 'prov-fill', (e) => {
+        const f = e.features && e.features[0];
+        map.getCanvas().style.cursor = f && f.properties.has ? 'pointer' : '';
+      });
+      map.on('mouseleave', 'prov-fill', () => { map.getCanvas().style.cursor = ''; });
+      map.on('click', 'prov-fill', (e) => {
+        const f = e.features && e.features[0];
+        if (!f || !f.properties.has) return;
+        // A station dot may sit on top of the fill; the dot owns the click.
+        if (map.queryRenderedFeatures(e.point, { layers: ['stations-hit'] }).length) return;
+        if (cho && cho.onProvince) cho.onProvince(f.properties.name);
+      });
+    } catch (_) { /* map disposed mid-load */ }
+  });
+}
+
+function applyProvMetric() {
+  document.querySelectorAll('[data-provmetric]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.provmetric === state.provMetric);
+    b.setAttribute('aria-pressed', String(b.dataset.provmetric === state.provMetric));
+  });
+  const breaks = provBreaks();
+  maps.forEach((m) => {
+    try {
+      if (!m.getLayer('prov-fill')) return;
+      m.setPaintProperty('prov-fill', 'fill-color', provFillExpr(breaks));
+      m.__choropleth = { breaks };
+    } catch (_) { /* disposed */ }
+  });
+  ['legend-overview', 'legend-health'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.dataset.choropleth === '1') el.innerHTML = provLegendHtml(el.dataset.dots === '1');
+  });
+}
+
+function makeMap(id, rows, opts = {}) {  const el = document.getElementById(id);
   if (!el || !window.maplibregl) return null;
   const map = new maplibregl.Map({
     container: el,
@@ -3784,9 +4164,15 @@ function makeMap(id, rows, opts = {}) {
     if (opts.zoom !== false) addMapZoom(map);
     if (opts.labels) addStationLabels(map, rows);
     if (opts.islands !== false) addIslandLabels(map);
+    if (opts.choropleth) addChoropleth(map, opts.choropleth === true ? {} : opts.choropleth);
   });
   const legend = document.getElementById(id.replace('map', 'legend'));
-  if (legend && opts.legend) legend.innerHTML = opts.legend;
+  if (legend) {
+    legend.dataset.choropleth = opts.choropleth ? '1' : '';
+    legend.dataset.dots = rows.length ? '1' : '';
+    legend.classList.toggle('is-choro', !!opts.choropleth);
+    if (opts.legend) legend.innerHTML = opts.legend;
+  }
   return map;
 }
 
@@ -4148,7 +4534,7 @@ function renderStory() {
     const pages = [
       ['ringkasan', 'Ringkasan', 'Hotspot, tren, dan ranking stasiun', ['Peta', 'Tren', 'Ranking'], `${fmt(DATA.overview.kpis[0].value, 1)} µg/m³`, 'Sep–Okt 2026'],
       ['waktu', 'Waktu', 'Kalender harian sampai pola 24 jam', ['Kalender', 'Episode', '24 jam'], `${fmt(DATA.time.diurnal['7'], 1)}%`, 'puncak 07.00'],
-      ['wilayah', 'Wilayah', 'Peta skematis dan profil per stasiun', ['PM2.5', 'ISPU', 'Profil'], `${DATA.meta.data_quality.stations}`, 'stasiun · 5 pulau'],
+      ['wilayah', 'Stasiun', 'Peta skematis dan profil per stasiun', ['PM2.5', 'ISPU', 'Profil'], `${DATA.meta.data_quality.stations}`, 'stasiun · 5 pulau'],
       ['sumber', 'Sumber', 'Korelasi tingkat stasiun dan polutan', ['Korelasi', 'Polutan', 'Meteo'], `r ${fmt(DATA.sources.corr.all.baseline, 2).replace('.', ',')}`, 'baseline 2024–2026'],
       ['kesehatan', 'Kesehatan', 'Observed vs expected dan lag paparan', ['Lag', 'Beban', 'Estimasi'], fmtInt(DATA.health.years[2].excess.resp), 'kasus respirasi'],
       ['jaringan', 'Jaringan', 'Status, cakupan, dan gap data stasiun', ['Status', 'Cakupan', 'Gap'], `${DATA.network.status_counts.Baik}/${DATA.meta.data_quality.stations}`, 'stasiun berstatus Baik'],
@@ -4249,28 +4635,29 @@ function initTip() {
   const tip = $('#tip');
   let current = null;
   const show = (el) => {
+    const html = el.dataset.tipHtml;
     const text = el.dataset.tip;
-    if (!text) return;
+    if (!html && !text) return;
     current = el;
-    tip.textContent = text;
+    if (html) tip.innerHTML = html; else tip.textContent = text;
     tip.hidden = false;
     const r = el.getBoundingClientRect();
-    const x = Math.min(window.innerWidth - 270, Math.max(8, r.left + r.width / 2 - 130));
+    const x = Math.min(window.innerWidth - 310, Math.max(8, r.left + r.width / 2 - 150));
     const y = Math.min(window.innerHeight - 80, r.bottom + 8);
     tip.style.left = `${x}px`;
     tip.style.top = `${y}px`;
   };
   const hide = () => { current = null; tip.hidden = true; };
   document.addEventListener('mouseover', (e) => {
-    const el = e.target.closest('[data-tip]');
+    const el = e.target.closest('[data-tip],[data-tip-html]');
     if (el) show(el);
   });
   document.addEventListener('mouseout', (e) => {
-    const el = e.target.closest('[data-tip]');
+    const el = e.target.closest('[data-tip],[data-tip-html]');
     if (el && !el.contains(e.relatedTarget)) hide();
   });
   document.addEventListener('focusin', (e) => {
-    const el = e.target.closest('[data-tip]');
+    const el = e.target.closest('[data-tip],[data-tip-html]');
     if (el) show(el);
   });
   document.addEventListener('focusout', hide);

@@ -16,7 +16,7 @@
       "traffic": 0.16
     }
   },
-  "generated_at": "2026-11-08 08:38",
+  "generated_at": "2026-11-12 01:01",
   "data_quality": {
     "raw_rows": 667981,
     "valid_rows": 599185,
@@ -524,8 +524,8 @@
   ],
   "excess_station": [
     {
-      "station": "PKU-01",
-      "island": "Sumatera",
+      "station": "PKN-01",
+      "island": "Kalimantan",
       "days": 75,
       "resp_admissions_under5": 1965,
       "resp_admissions_over60": 2151,
@@ -539,8 +539,8 @@
       "status": "Baik"
     },
     {
-      "station": "BTM-01",
-      "island": "Sumatera",
+      "station": "KTG-02",
+      "island": "Kalimantan",
       "days": 75,
       "resp_admissions_under5": 1230,
       "resp_admissions_over60": 1379,
@@ -554,7 +554,7 @@
       "status": "Baik"
     },
     {
-      "station": "BJB-01",
+      "station": "KTG-01",
       "island": "Kalimantan",
       "days": 75,
       "resp_admissions_under5": 1238,
@@ -564,9 +564,9 @@
       "resp": 4968,
       "cvd": 1872,
       "death": 568,
-      "usable_days": 712,
-      "usable_pct": 69.9,
-      "status": "Terbatas"
+      "usable_days": 1018,
+      "usable_pct": 100.0,
+      "status": "Baik"
     },
     {
       "station": "PLB-01",
@@ -584,7 +584,7 @@
       "status": "Perhatian"
     },
     {
-      "station": "PKN-01",
+      "station": "STG-01",
       "island": "Kalimantan",
       "days": 75,
       "resp_admissions_under5": 1389,
@@ -599,7 +599,7 @@
       "status": "Baik"
     },
     {
-      "station": "JMB-02",
+      "station": "PKU-01",
       "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": 1152,
@@ -609,12 +609,12 @@
       "resp": 3110,
       "cvd": 249,
       "death": 101,
-      "usable_days": 0,
-      "usable_pct": 0.0,
-      "status": "Gagal"
+      "usable_days": 1018,
+      "usable_pct": 100.0,
+      "status": "Baik"
     },
     {
-      "station": "KTB-01",
+      "station": "JMB-01",
       "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": 1168,
@@ -629,8 +629,8 @@
       "status": "Baik"
     },
     {
-      "station": "KTG-01",
-      "island": "Kalimantan",
+      "station": "BTM-01",
+      "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": 980,
       "resp_admissions_over60": 1038,
@@ -644,8 +644,8 @@
       "status": "Baik"
     },
     {
-      "station": "PLU-01",
-      "island": "Sulawesi",
+      "station": "PSW-01",
+      "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": 611,
       "resp_admissions_over60": 692,
@@ -659,7 +659,7 @@
       "status": "Baik"
     },
     {
-      "station": "JMB-01",
+      "station": "KTB-01",
       "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": 460,
@@ -674,8 +674,8 @@
       "status": "Baik"
     },
     {
-      "station": "MLG-01",
-      "island": "Jawa",
+      "station": "MRS-01",
+      "island": "Sulawesi",
       "days": 75,
       "resp_admissions_under5": 243,
       "resp_admissions_over60": 252,
@@ -689,8 +689,8 @@
       "status": "Baik"
     },
     {
-      "station": "MER-01",
-      "island": "Papua",
+      "station": "MLG-01",
+      "island": "Jawa",
       "days": 75,
       "resp_admissions_under5": 168,
       "resp_admissions_over60": 186,
@@ -699,12 +699,12 @@
       "resp": 456,
       "cvd": 34,
       "death": 12,
-      "usable_days": 2,
-      "usable_pct": 0.2,
-      "status": "Tidak memadai"
+      "usable_days": 1018,
+      "usable_pct": 100.0,
+      "status": "Baik"
     },
     {
-      "station": "JKT-02",
+      "station": "YKY-01",
       "island": "Jawa",
       "days": 75,
       "resp_admissions_under5": 144,
@@ -719,8 +719,8 @@
       "status": "Baik"
     },
     {
-      "station": "SRG-01",
-      "island": "Papua",
+      "station": "SM2-01",
+      "island": "Kalimantan",
       "days": 75,
       "resp_admissions_under5": 140,
       "resp_admissions_over60": 164,
@@ -729,12 +729,12 @@
       "resp": 433,
       "cvd": 111,
       "death": 70,
-      "usable_days": 1018,
-      "usable_pct": 100.0,
+      "usable_days": 1011,
+      "usable_pct": 99.3,
       "status": "Baik"
     },
     {
-      "station": "STG-01",
+      "station": "BJB-01",
       "island": "Kalimantan",
       "days": 75,
       "resp_admissions_under5": 110,
@@ -744,13 +744,13 @@
       "resp": 340,
       "cvd": 59,
       "death": 53,
-      "usable_days": 1018,
-      "usable_pct": 100.0,
-      "status": "Baik"
+      "usable_days": 712,
+      "usable_pct": 69.9,
+      "status": "Terbatas"
     },
     {
-      "station": "KTG-02",
-      "island": "Kalimantan",
+      "station": "BGL-01",
+      "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": 107,
       "resp_admissions_over60": 114,
@@ -764,8 +764,8 @@
       "status": "Baik"
     },
     {
-      "station": "BGL-01",
-      "island": "Sumatera",
+      "station": "JKT-01",
+      "island": "Jawa",
       "days": 75,
       "resp_admissions_under5": 36,
       "resp_admissions_over60": 34,
@@ -779,7 +779,7 @@
       "status": "Baik"
     },
     {
-      "station": "BGR-02",
+      "station": "JKT-03",
       "island": "Jawa",
       "days": 75,
       "resp_admissions_under5": 20,
@@ -794,8 +794,8 @@
       "status": "Baik"
     },
     {
-      "station": "JKT-03",
-      "island": "Jawa",
+      "station": "IDP-01",
+      "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": 7,
       "resp_admissions_over60": 13,
@@ -809,8 +809,8 @@
       "status": "Baik"
     },
     {
-      "station": "PSW-01",
-      "island": "Sumatera",
+      "station": "MER-01",
+      "island": "Papua",
       "days": 75,
       "resp_admissions_under5": 1,
       "resp_admissions_over60": 19,
@@ -819,13 +819,13 @@
       "resp": 4,
       "cvd": -2,
       "death": 17,
-      "usable_days": 1018,
-      "usable_pct": 100.0,
-      "status": "Baik"
+      "usable_days": 2,
+      "usable_pct": 0.2,
+      "status": "Tidak memadai"
     },
     {
-      "station": "MDN-01",
-      "island": "Sumatera",
+      "station": "SRG-01",
+      "island": "Papua",
       "days": 75,
       "resp_admissions_under5": -1,
       "resp_admissions_over60": 0,
@@ -834,13 +834,13 @@
       "resp": 3,
       "cvd": -9,
       "death": 6,
-      "usable_days": 684,
-      "usable_pct": 67.2,
-      "status": "Terbatas"
+      "usable_days": 1018,
+      "usable_pct": 100.0,
+      "status": "Baik"
     },
     {
-      "station": "IDP-01",
-      "island": "Sumatera",
+      "station": "BGR-01",
+      "island": "Jawa",
       "days": 75,
       "resp_admissions_under5": -7,
       "resp_admissions_over60": 23,
@@ -854,7 +854,7 @@
       "status": "Baik"
     },
     {
-      "station": "JKT-01",
+      "station": "BGR-02",
       "island": "Jawa",
       "days": 75,
       "resp_admissions_under5": 14,
@@ -869,7 +869,7 @@
       "status": "Baik"
     },
     {
-      "station": "MRS-01",
+      "station": "PLU-01",
       "island": "Sulawesi",
       "days": 75,
       "resp_admissions_under5": -34,
@@ -884,8 +884,8 @@
       "status": "Baik"
     },
     {
-      "station": "YKY-01",
-      "island": "Jawa",
+      "station": "JMB-02",
+      "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": -24,
       "resp_admissions_over60": -30,
@@ -894,12 +894,12 @@
       "resp": -84,
       "cvd": -68,
       "death": 12,
-      "usable_days": 1018,
-      "usable_pct": 100.0,
-      "status": "Baik"
+      "usable_days": 0,
+      "usable_pct": 0.0,
+      "status": "Gagal"
     },
     {
-      "station": "BGR-01",
+      "station": "JKT-02",
       "island": "Jawa",
       "days": 75,
       "resp_admissions_under5": -49,
@@ -914,8 +914,8 @@
       "status": "Baik"
     },
     {
-      "station": "SM2-01",
-      "island": "Kalimantan",
+      "station": "MDN-01",
+      "island": "Sumatera",
       "days": 75,
       "resp_admissions_under5": -75,
       "resp_admissions_over60": -91,
@@ -924,146 +924,146 @@
       "resp": -229,
       "cvd": -191,
       "death": -15,
-      "usable_days": 1011,
-      "usable_pct": 99.3,
-      "status": "Baik"
+      "usable_days": 684,
+      "usable_pct": 67.2,
+      "status": "Terbatas"
     }
   ],
   "lag": {
     "0": {
-      "resp_admissions_under5": 0.361,
-      "resp_admissions_over60": 0.353,
-      "asthma_emergency_cases": 0.347,
-      "copd_admissions": 0.355,
-      "resp": 0.365,
-      "cvd": 0.225,
-      "death": 0.206
+      "resp_admissions_under5": 0.52,
+      "resp_admissions_over60": 0.518,
+      "asthma_emergency_cases": 0.499,
+      "copd_admissions": 0.506,
+      "resp": 0.533,
+      "cvd": 0.336,
+      "death": 0.274
     },
     "1": {
-      "resp_admissions_under5": 0.353,
-      "resp_admissions_over60": 0.354,
-      "asthma_emergency_cases": 0.344,
-      "copd_admissions": 0.35,
-      "resp": 0.366,
-      "cvd": 0.222,
-      "death": 0.204
+      "resp_admissions_under5": 0.51,
+      "resp_admissions_over60": 0.513,
+      "asthma_emergency_cases": 0.487,
+      "copd_admissions": 0.498,
+      "resp": 0.52,
+      "cvd": 0.329,
+      "death": 0.27
     },
     "2": {
-      "resp_admissions_under5": 0.353,
-      "resp_admissions_over60": 0.35,
-      "asthma_emergency_cases": 0.335,
-      "copd_admissions": 0.344,
-      "resp": 0.361,
-      "cvd": 0.225,
-      "death": 0.197
+      "resp_admissions_under5": 0.499,
+      "resp_admissions_over60": 0.496,
+      "asthma_emergency_cases": 0.476,
+      "copd_admissions": 0.486,
+      "resp": 0.509,
+      "cvd": 0.323,
+      "death": 0.268
     },
     "3": {
-      "resp_admissions_under5": 0.342,
-      "resp_admissions_over60": 0.344,
-      "asthma_emergency_cases": 0.329,
-      "copd_admissions": 0.339,
-      "resp": 0.352,
-      "cvd": 0.221,
-      "death": 0.192
+      "resp_admissions_under5": 0.484,
+      "resp_admissions_over60": 0.487,
+      "asthma_emergency_cases": 0.468,
+      "copd_admissions": 0.477,
+      "resp": 0.495,
+      "cvd": 0.313,
+      "death": 0.269
     },
     "4": {
-      "resp_admissions_under5": 0.339,
-      "resp_admissions_over60": 0.334,
-      "asthma_emergency_cases": 0.32,
-      "copd_admissions": 0.329,
-      "resp": 0.345,
-      "cvd": 0.216,
-      "death": 0.194
+      "resp_admissions_under5": 0.475,
+      "resp_admissions_over60": 0.476,
+      "asthma_emergency_cases": 0.458,
+      "copd_admissions": 0.463,
+      "resp": 0.485,
+      "cvd": 0.305,
+      "death": 0.259
     },
     "5": {
-      "resp_admissions_under5": 0.331,
-      "resp_admissions_over60": 0.326,
-      "asthma_emergency_cases": 0.317,
-      "copd_admissions": 0.322,
-      "resp": 0.338,
-      "cvd": 0.213,
-      "death": 0.188
+      "resp_admissions_under5": 0.465,
+      "resp_admissions_over60": 0.466,
+      "asthma_emergency_cases": 0.445,
+      "copd_admissions": 0.454,
+      "resp": 0.475,
+      "cvd": 0.299,
+      "death": 0.251
     },
     "6": {
-      "resp_admissions_under5": 0.33,
-      "resp_admissions_over60": 0.322,
-      "asthma_emergency_cases": 0.314,
-      "copd_admissions": 0.32,
-      "resp": 0.335,
-      "cvd": 0.207,
-      "death": 0.191
+      "resp_admissions_under5": 0.459,
+      "resp_admissions_over60": 0.455,
+      "asthma_emergency_cases": 0.443,
+      "copd_admissions": 0.448,
+      "resp": 0.471,
+      "cvd": 0.298,
+      "death": 0.247
     },
     "7": {
-      "resp_admissions_under5": 0.328,
-      "resp_admissions_over60": 0.327,
-      "asthma_emergency_cases": 0.316,
-      "copd_admissions": 0.322,
-      "resp": 0.338,
-      "cvd": 0.21,
-      "death": 0.189
+      "resp_admissions_under5": 0.453,
+      "resp_admissions_over60": 0.458,
+      "asthma_emergency_cases": 0.438,
+      "copd_admissions": 0.446,
+      "resp": 0.466,
+      "cvd": 0.293,
+      "death": 0.244
     },
     "8": {
-      "resp_admissions_under5": 0.328,
-      "resp_admissions_over60": 0.323,
-      "asthma_emergency_cases": 0.313,
-      "copd_admissions": 0.321,
-      "resp": 0.335,
-      "cvd": 0.207,
-      "death": 0.185
+      "resp_admissions_under5": 0.452,
+      "resp_admissions_over60": 0.452,
+      "asthma_emergency_cases": 0.433,
+      "copd_admissions": 0.444,
+      "resp": 0.464,
+      "cvd": 0.289,
+      "death": 0.246
     },
     "9": {
-      "resp_admissions_under5": 0.326,
-      "resp_admissions_over60": 0.325,
-      "asthma_emergency_cases": 0.314,
-      "copd_admissions": 0.319,
-      "resp": 0.335,
-      "cvd": 0.206,
-      "death": 0.188
+      "resp_admissions_under5": 0.449,
+      "resp_admissions_over60": 0.448,
+      "asthma_emergency_cases": 0.43,
+      "copd_admissions": 0.443,
+      "resp": 0.462,
+      "cvd": 0.292,
+      "death": 0.242
     },
     "10": {
-      "resp_admissions_under5": 0.325,
-      "resp_admissions_over60": 0.323,
-      "asthma_emergency_cases": 0.308,
-      "copd_admissions": 0.319,
-      "resp": 0.331,
-      "cvd": 0.204,
-      "death": 0.192
+      "resp_admissions_under5": 0.444,
+      "resp_admissions_over60": 0.444,
+      "asthma_emergency_cases": 0.428,
+      "copd_admissions": 0.439,
+      "resp": 0.456,
+      "cvd": 0.289,
+      "death": 0.242
     },
     "11": {
-      "resp_admissions_under5": 0.322,
-      "resp_admissions_over60": 0.326,
-      "asthma_emergency_cases": 0.311,
-      "copd_admissions": 0.319,
-      "resp": 0.333,
-      "cvd": 0.205,
-      "death": 0.192
+      "resp_admissions_under5": 0.442,
+      "resp_admissions_over60": 0.443,
+      "asthma_emergency_cases": 0.426,
+      "copd_admissions": 0.433,
+      "resp": 0.455,
+      "cvd": 0.286,
+      "death": 0.238
     },
     "12": {
-      "resp_admissions_under5": 0.321,
-      "resp_admissions_over60": 0.318,
-      "asthma_emergency_cases": 0.311,
-      "copd_admissions": 0.317,
-      "resp": 0.329,
-      "cvd": 0.203,
-      "death": 0.183
+      "resp_admissions_under5": 0.44,
+      "resp_admissions_over60": 0.441,
+      "asthma_emergency_cases": 0.422,
+      "copd_admissions": 0.433,
+      "resp": 0.451,
+      "cvd": 0.284,
+      "death": 0.243
     },
     "13": {
-      "resp_admissions_under5": 0.319,
-      "resp_admissions_over60": 0.322,
-      "asthma_emergency_cases": 0.31,
-      "copd_admissions": 0.319,
-      "resp": 0.331,
-      "cvd": 0.204,
-      "death": 0.183
+      "resp_admissions_under5": 0.44,
+      "resp_admissions_over60": 0.439,
+      "asthma_emergency_cases": 0.424,
+      "copd_admissions": 0.432,
+      "resp": 0.45,
+      "cvd": 0.282,
+      "death": 0.238
     },
     "14": {
-      "resp_admissions_under5": 0.321,
-      "resp_admissions_over60": 0.316,
-      "asthma_emergency_cases": 0.307,
-      "copd_admissions": 0.319,
-      "resp": 0.329,
-      "cvd": 0.206,
-      "death": 0.187
+      "resp_admissions_under5": 0.439,
+      "resp_admissions_over60": 0.438,
+      "asthma_emergency_cases": 0.418,
+      "copd_admissions": 0.436,
+      "resp": 0.449,
+      "cvd": 0.281,
+      "death": 0.237
     }
   },
   "coverage": {

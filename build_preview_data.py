@@ -147,6 +147,58 @@ monthly_map = {
 }
 
 stations = []
+
+# sensor hardware + instrument inventory (from sensors.csv / sites.csv)
+INSTRUMENTS = [
+    ("pm25", "PM2.5"),
+    ("pm10", "PM10"),
+    ("so2", "SO2"),
+    ("co", "CO"),
+    ("o3", "O3"),
+    ("no2", "NO2"),
+]
+_sensors = pd.read_csv(DATASET / "sensors.csv")
+_sites_raw = pd.read_csv(DATASET / "sites.csv")
+_sites_raw["station"] = _sites_raw["location_id"].str.replace("LOC-", "", regex=False)
+_sensors["station"] = _sensors["location_id"].str.replace("LOC-", "", regex=False)
+
+
+def _pretty(text):
+    return str(text).replace("_", " ").strip()
+
+
+sensor_by_station = {}
+for r in _sensors.to_dict(orient="records"):
+    sensor_by_station[r["station"]] = {
+        "id": r["sensor_id"],
+        "name": _pretty(r["nama_sensor"]),
+        "model": _pretty(r["model_sensor"]),
+        "mounting": _pretty(r["tipe_pemasangan"]),
+        "status": _pretty(r["status_operasional"]),
+        "installed": str(r["tanggal_instalasi"])[:10],
+    }
+
+instruments_by_station = {}
+for r in _sites_raw.to_dict(orient="records"):
+    rows = []
+    for key, label in INSTRUMENTS:
+        equipment = r.get(f"{key}_equipment")
+        if not equipment or pd.isna(equipment):
+            continue
+        unit = str(r.get(f"{key}_unit") or "ug/m3")
+        rows.append(
+            {
+                "pollutant": label,
+                "equipment": _pretty(equipment),
+                "unit_raw": unit,
+                "converted": unit == "ppm",
+            }
+        )
+    meteo = r.get("meteo_equipment")
+    if meteo and not pd.isna(meteo):
+        rows.append({"pollutant": "Meteo", "equipment": _pretty(meteo), "unit_raw": "—", "converted": False})
+    instruments_by_station[r["station"]] = rows
+
 for row in station_table.to_dict(orient="records"):
     st = row["station"]
     t = top26_by_station.loc[st] if st in top26_by_station.index else None
@@ -179,6 +231,8 @@ for row in station_table.to_dict(orient="records"):
             "ispu_dominant": None if dom is None else str(dom["kategori"]),
             "ispu_share": None if dom is None else float(dom["share"]),
             "monthly_2026": monthly_map.get(st, []),
+            "sensor": sensor_by_station.get(st),
+            "instruments": instruments_by_station.get(st, []),
         }
     )
 
@@ -577,6 +631,123 @@ for r in pd.DataFrame(metrics["excess_station"]).to_dict(orient="records"):
         }
     )
 
+# ------------------------------------------------------------ hospitals
+_hosp_meta = pd.read_csv(DATASET / "hospitals.csv")
+_hosp_meta["kapasitas_tempat_tidur"] = pd.to_numeric(_hosp_meta["kapasitas_tempat_tidur"], errors="coerce")
+_hosp_meta = _hosp_meta.rename(
+    columns={
+        "hospital_id": "id",
+        "nama_rumah_sakit": "name",
+        "kota_kabupaten": "city",
+        "kelas_faskes": "kelas",
+        "kapasitas_tempat_tidur": "beds",
+    }
+)
+_station_of = dict(zip(_hosp_meta["id"], _hosp_meta["station"])) if "station" in _hosp_meta else {}
+# station mapping comes from the analysis output (geographic join)
+_station_by_hosp = health_raw.drop_duplicates("hospital_id").set_index("hospital_id")["station"].to_dict()
+_island_by_hosp = health_raw.drop_duplicates("hospital_id").set_index("hospital_id")["island"].to_dict()
+_siteclass_by_hosp = health_raw.drop_duplicates("hospital_id").set_index("hospital_id")["site_class"].to_dict()
+
+HZ_START, HZ_END = pd.Timestamp("2026-08-01"), pd.Timestamp("2026-10-14")
+_hz = health_raw[(health_raw["date"] >= HZ_START) & (health_raw["date"] <= HZ_END)]
+_base26 = health_raw[(health_raw["date"].dt.year == 2026) & (health_raw["date"].dt.strftime("%m-%d").between("01-01", "06-30"))]
+_hz_days = int(_hz["date"].nunique())
+_actual_all = _hz.groupby("hospital_id")[OUTCOME_KEYS].sum()
+_base_mean = _base26.groupby(["hospital_id", "date"])[OUTCOME_KEYS].sum().groupby("hospital_id").mean()
+_monthly_hosp = {}
+for (hosp, month), g in health_raw.groupby(["hospital_id", health_raw["date"].dt.strftime("%Y-%m")]):
+    _monthly_hosp.setdefault(hosp, {})[month] = {
+        "resp": int(g["resp"].sum()),
+        "days": int(g["date"].nunique()),
+    }
+
+hospitals_payload = []
+for r in _hosp_meta.to_dict(orient="records"):
+    hid = r["id"]
+    beds = None if pd.isna(r["beds"]) else float(r["beds"])
+    actual_row = _actual_all.loc[hid] if hid in _actual_all.index else None
+    base_row = _base_mean.loc[hid] if hid in _base_mean.index else None
+    actual = {o: int(actual_row[o]) for o in OUTCOME_KEYS} if actual_row is not None else {o: 0 for o in OUTCOME_KEYS}
+    expected = {o: int(round(base_row[o] * _hz_days)) for o in OUTCOME_KEYS} if base_row is not None else {o: 0 for o in OUTCOME_KEYS}
+    excess = {o: actual[o] - expected[o] for o in OUTCOME_KEYS}
+    months = []
+    for m in sorted(_monthly_hosp.get(hid, {})):
+        entry = _monthly_hosp[hid][m]
+        months.append({"m": m, "v": entry["resp"], "days": entry["days"], "partial": entry["days"] < 15})
+    hospitals_payload.append(
+        {
+            "id": hid,
+            "name": r["name"],
+            "city": r["city"],
+            "kecamatan": r["kecamatan"],
+            "province": r["provinsi"],
+            "kelas": r["kelas"],
+            "beds": beds,
+            "station": _station_by_hosp.get(hid),
+            "island": _island_by_hosp.get(hid),
+            "site_class": _siteclass_by_hosp.get(hid),
+            "days": _hz_days,
+            "actual": actual,
+            "expected": expected,
+            "excess": excess,
+            "per100beds": round(actual["resp"] / beds * 100, 1) if beds else None,
+            "per100beds_excess": round(excess["resp"] / beds * 100, 1) if beds else None,
+            "monthly": months,
+        }
+    )
+
+hospitals_payload.sort(key=lambda h: h["actual"]["resp"], reverse=True)
+
+
+def _province_rows(rows):
+    out = {}
+    for h in rows:
+        p = h["province"]
+        agg = out.setdefault(
+            p,
+            {"province": p, "hospitals": 0, "beds": 0.0, "actual": {o: 0 for o in OUTCOME_KEYS}, "expected": {o: 0 for o in OUTCOME_KEYS}},
+        )
+        agg["hospitals"] += 1
+        agg["beds"] += h["beds"] or 0
+        for o in OUTCOME_KEYS:
+            agg["actual"][o] += h["actual"][o]
+            agg["expected"][o] += h["expected"][o]
+    result = []
+    for p, agg in out.items():
+        actual = agg["actual"]
+        excess = {o: actual[o] - agg["expected"][o] for o in OUTCOME_KEYS}
+        result.append(
+            {
+                "province": p,
+                "hospitals": agg["hospitals"],
+                "beds": round(agg["beds"], 0),
+                "island": _island_by_hosp.get(next((h["id"] for h in rows if h["province"] == p), None)),
+                "actual": actual,
+                "excess": excess,
+                "per100beds": round(actual["resp"] / agg["beds"] * 100, 1) if agg["beds"] else None,
+                "per100beds_excess": round(excess["resp"] / agg["beds"] * 100, 1) if agg["beds"] else None,
+            }
+        )
+    result.sort(key=lambda r: r["actual"]["resp"], reverse=True)
+    return result
+
+
+hospital_provinces = _province_rows(hospitals_payload)
+_hosp_island = {}
+for _h in hospitals_payload:
+    _hosp_island.setdefault(_h["island"], []).append(_h)
+hospital_provinces_by_island = {str(k): _province_rows(v) for k, v in _hosp_island.items()}
+
+hospitals_payload_meta = {
+    "count": len(hospitals_payload),
+    "beds_total": round(sum((h["beds"] or 0) for h in hospitals_payload), 0),
+    "provinces": len(hospital_provinces),
+    "days": _hz_days,
+    "window": "1 Agu–14 Okt 2026",
+    "per_bed_unit": "kasus per 100 tempat tidur",
+}
+
 # QC totals and completeness
 QC_ORDER = ["VALID", "SUSPECT", "MISSING", "CALIBRATING", "WARMUP", "MAINTENANCE", "PARSER_FAIL", "FATAL_ERR", "GARBAGE", "COMM_LOST", "CORRUPT", "SENSOR_DEAD"]
 qc_counts = {q: 0 for q in QC_ORDER}
@@ -633,6 +804,28 @@ PHYS = {
     "wind_speed_ms": (0, 60), "wind_direction_deg": (0, 360),
 }
 
+# ppm -> µg/m³ for gases: C[µg/m³] = C[ppm] × MW × 1000 / Vm(T), Vm = 0.082057 × T[K].
+GAS_MW = {"so2": 64.07, "co": 28.01, "o3": 48.00, "no2": 46.01}
+R_LATM = 0.082057
+T_FALLBACK_K = 298.15
+
+
+def convert_ppm_columns(df, ppm_cols, temp_col="temperature_c"):
+    temp = pd.to_numeric(df[temp_col], errors="coerce") if temp_col in df else pd.Series(float("nan"), index=df.index)
+    tk = temp.fillna(T_FALLBACK_K - 273.15) + 273.15
+    vm = R_LATM * tk
+    for col in ppm_cols:
+        target = col.replace("_ppm", "_ug_m3")
+        if target not in df:
+            continue
+        values = pd.to_numeric(df[target], errors="coerce")
+        pollutant = col[:-4].lower()
+        if pollutant in GAS_MW:
+            df[target] = values * (GAS_MW[pollutant] * 1000.0) / vm
+        else:
+            df[target] = values * 1000.0
+    return df
+
 
 def load_station_hourly(path: Path):
     code = path.name.split("_")[0]
@@ -643,8 +836,7 @@ def load_station_hourly(path: Path):
     for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     if ppm_cols:
-        for c in [c for c in df.columns if c.endswith("_ug_m3")]:
-            df[c] = df[c] * 1000.0
+        df = convert_ppm_columns(df, ppm_cols)
     df["timestamp_start"] = pd.to_datetime(df["timestamp_start"], errors="coerce")
     df = df[df["timestamp_start"].notna()].copy()
     df = df[df["timestamp_start"].dt.year >= 2024].copy()
@@ -849,6 +1041,17 @@ dump(
 )
 
 dump(
+    "hospitals.json",
+    {
+        "meta": hospitals_payload_meta,
+        "hospitals": hospitals_payload,
+        "provinces": hospital_provinces,
+        "provinces_by_island": hospital_provinces_by_island,
+        "outcomes": [{"key": k, "label": lab, "short": short} for k, lab, short in OUTCOMES],
+    },
+)
+
+dump(
     "network.json",
     {
         "coverage": metrics["coverage"],
@@ -890,17 +1093,22 @@ dump(
             ("Korelasi meteorologi", "Korelasi Pearson jam-jaman PM2.5 dengan suhu, kelembapan, dan kecepatan angin per stasiun."),
             ("Kelengkapan bulanan", "Hari layak dibagi hari kalender bulan per stasiun."),
             ("Lag per stasiun", "Korelasi Pearson anomali PM2.5 harian dengan anomali kunjungan rumah sakit (rata-rata bulanan dikeluarkan) pada lag 0, dengan minimal 30 hari tumpang tindih."),
+            ("Pasangan RS–stasiun", "Setiap rumah sakit dipasangkan ke stasiun pada kota/kabupaten dan kecamatan yang sama (27 dari 27 cocok), bukan urutan abjad."),
+            ("Kasus per 100 tempat tidur", "Kunjungan respirasi jendela dibagi kapasitas tempat tidur rumah sakit, dikali 100. Beban layanan, bukan insidensi penduduk."),
+            ("Kasus rumah sakit", "Kunjungan/rawat inap yang tercatat, bukan kasus yang diatribusikan ke PM2.5. Dipakai sebagai beban layanan; sinyal polusi memakai kelebihan kasus."),
         ],
         "qc": [
             ("Tier QC", "VALID + SUSPECT yang lolos physical range. JMB-02/MER-01 hanya VALID."),
-            ("Unit", "Kolom ppm dikonversi ke µg/m³; PLB-01 di-floor ke jam."),
+            ("Konversi ppm", "Gas (SO2, CO, O3, NO2): ppm × berat molekul × 1000 / volume molar pada suhu baris (0,082057 × T). Partikulat (PM2.5, PM10): ppm tidak lazim, nilai diperlakukan sebagai mg/m³ (×1000) — asumsi, bukan konversi fisik."),
+            ("Stasiun ppm", "BJB-01, MDN-01, PSW-01 melaporkan semua polutan dalam ppm; gas dikonversi per suhu, partikulat memakai asumsi mg/m³."),
+            ("PLB-01", "Resolusi 15 menit di-floor ke jam (11.949 baris)."),
             ("BJB-01", "Sensor stuck: 4.886 jam pada 336,7 dan 2.443 jam pada 3,5; dikeluarkan dari agregat."),
             ("SM2-01", "1.039 jam pada 999; mean 336,0 adalah lower bound."),
         ],
         "limitations": [
             "Tidak ada dataset eksternal; seluruh angka berasal dari 33 file panitia.",
             "Korelasi dan estimasi kesehatan bersifat asosiatif, bukan kausal.",
-            "Peta skematik tanpa basemap; posisi titik adalah koordinat stasiun.",
+            "Peta memakai basemap 38 provinsi; warna provinsi mengikuti rumah sakit mitra, bukan sensus kasus.",
             "Oktober 2026 parsial (1–14 Okt); semua label bulanan memakai penanda parsial.",
         ],
         "pipeline": [

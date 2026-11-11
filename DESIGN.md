@@ -57,7 +57,7 @@ border-radius: 20px;
 ```
 
 Radius: shell 24, card 20, control 10–12, chip 999.
-Blur: sidebar 24, topbar/card 22, filterbar 20, KPI 20, story 26.
+Blur: sidebar 24, topbar/card 22, filterbar 20, story 26. Kartu KPI **tanpa** blur (gradien putih `rgba(255,255,255,.93→.85)`) supaya anggaran blur tetap ≤14 di halaman padat (Kesehatan).
 
 ### Anggaran performa
 - Maksimum **14 elemen** ber-`backdrop-filter` per halaman.
@@ -153,9 +153,11 @@ Grid 12 kolom; tinggi kartu dari token `h-*` (`h-460` = 420px desktop, 330px com
 1. `page-head` + 3 pill (rasio 2024, `valid_overall_pct`, wilayah tanpa stasiun).
 2. KPI ×4, semuanya pintu: `mean`→Waktu, `above55`→Waktu, `heaviest`→panel stasiun, `resp`→Kesehatan.
 3. `.grid-55`: Peta hotspot **55%** ∥ Tren nasional **45%** — keduanya `h-420`.
-4. Baris 2 (`h-320`): Ranking pulau `span-3` ∥ Siklus 24 jam `span-4` ∥ Observed vs expected `span-5`.
+4. Baris 2 (`h-320`): Ranking pulau `span-3` ∥ Siklus 24 jam `span-4` ∥ Kasus per kategori `span-5`.
 5. Baris 3 (`h-280`): Komposisi ISPU per pulau `span-6` ∥ Perbandingan 5 kelas lokasi `span-6`.
 - Tren: 2026 `#D9663F` + titik, 2024/2025 slate, label bulan miring 45°, garis `PP 55` + `WHO 15`.
+- Peta hotspot: choropleth kasus RS mitra per provinsi (ramp terra 5 langkah, `tanpa RS mitra` abu netral) + titik stasiun ISPU di atas; toggle di card head `Kasus` ∥ `per 100 tempat tidur`; legenda chip "Kasus RS mitra · 75 hari" di kiri-bawah. Klik provinsi → panel provinsi (daftar RS per 100 tempat tidur, klik → panel RS).
+- Ranking pulau: garis putus-putus `PP 55` dengan label di atas (`start`), `grid.right` 54.
 - Siklus 24 jam: 3 garis indeks % (Nasional solid, Koridor jalan & Lahan gambut putus) + pita 06–08/17–19 + label puncak netral.
 - Kelas lokasi: grouped bar baseline vs mean 2026, garis P55 vertikal, urut menurun, tanpa P95.
 - Filter stasiun ter-scope ke KPI/peta/tren/komposisi/siklus/observed/kelas.
@@ -163,7 +165,11 @@ Grid 12 kolom; tinggi kartu dari token `h-*` (`h-460` = 420px desktop, 330px com
 
 **Waktu** — "Harian" `span-12 h-460` di baris pertama setelah KPI (fokus utama). Tidak ada kartu "Bulanan" (tren bulanan ada di Ringkasan). Kartu terakhir: Komposisi ISPU per tahun `span-12 h-280`, klik tahun → panel komposisi + selisih poin % vs tahun sebelumnya.
 
-**Wilayah** — Peta stasiun `span-7 h-420` ∥ Profil stasiun `span-5 h-420` (tombol `Bandingkan` di head → panel `.is-wide`: select A/B + 2 profil + tabel selisih). Lalu Tren bulanan stasiun `span-12 h-280`, Kronis–akut `span-7 h-320` ∥ Ringkasan beban `span-5 h-320`, tabel 27 stasiun. Tidak ada kartu "Pilih pembanding"/"Bandingkan profil" di halaman.
+**Stasiun** (id internal `wilayah`, URL `?page=wilayah` tetap) — Peta stasiun `span-7 h-420` ∥ Profil stasiun `span-5 h-420` (tombol `Bandingkan` di head → panel `.is-wide`: select A/B + 2 profil + tabel selisih). Profil memuat blok **Sensor** (ID, model, pemasangan, status, accordion "n instrumen & satuan" dengan badge `ppm → µg/m³`). Lalu Tren bulanan stasiun `span-12 h-280`, Kronis–akut `span-7 h-320` ∥ Ringkasan beban `span-5 h-320`, tabel 27 stasiun. Tidak ada kartu "Pilih pembanding"/"Bandingkan profil" di halaman.
+
+**Kesehatan** — KPI ×4 (tooltip berlapis: definisi, cakupan, ambang, pembanding). Strip `27 rumah sakit mitra · 6.280 tempat tidur · 1 RS per stasiun` (dari `hospitals.meta`). Baris 1: Kasus per kategori `span-7 h-340` ∥ Kelebihan per tahun `span-5 h-340`. Baris 2: PM2.5 dan kunjungan `span-12` (dua panel, bukan dual axis). Baris 3: **Peta kasus rumah sakit** `span-7 h-320` (choropleth + toggle metrik) ∥ Beban vs respons `span-5 h-320`. Baris 4: Lag 0–14 `span-7 h-320` ∥ Kelompok rentan `span-5 h-320`. Baris 5: **Peringkat** `span-12` dengan tab `Stasiun | Rumah sakit` (RS: kolom Kasus per 100 tempat tidur, klik baris → panel RS). Baris 6: estimasi kelebihan 7 outcome.
+
+**Panel detail** — provinsi & rumah sakit: `detailProvince()` / `detailHospital()`; satuan selalu ditulis penuh "per 100 tempat tidur" (jangan "TT"), jendela `75 hari` dari `hospitals.meta`.
 
 **Sidebar** — `clamp(168px, 12.2vw, 224px)`, breakpoint ≤1180px → 184px.
 
