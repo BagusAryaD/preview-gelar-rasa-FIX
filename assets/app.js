@@ -39,6 +39,15 @@ const CAT_COLORS = {
 };
 
 const STATUS_ORDER = ['Baik', 'Perhatian', 'Terbatas', 'Tidak memadai', 'Gagal'];
+const QC_PLAIN = {
+  VALID: 'Lolos pemeriksaan',
+  SUSPECT: 'Perlu pemeriksaan',
+  MISSING: 'Tidak ada data',
+  NONAKTIF: 'Sensor nonaktif',
+  ERROR: 'Gangguan sensor',
+};
+const QC_COLOR = { VALID: '#0F9D8A', SUSPECT: '#E3A008', MISSING: '#A8B0C2', NONAKTIF: '#7B6BB0', ERROR: '#C0453C' };
+function qcLabel(k) { return QC_PLAIN[k] || k; }
 const OUTCOME_LABELS = {
   resp: 'Respirasi',
   resp_admissions_under5: 'Balita',
@@ -53,11 +62,10 @@ const state = {
   page: 'ringkasan',
   island: 'Semua',
   station: null,
+  date: '2026-10-14',
+  range: 'tahun',
   tab: {},
-  sourceMode: 'all',
   lagOutcome: 'resp',
-  story: false,
-  scene: 1,
   compare: [],
   compareA: null,
   compareB: null,
@@ -74,7 +82,6 @@ const state = {
 const DATA = {};
 let charts = [];
 let maps = [];
-let storyChart = null;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -160,7 +167,7 @@ async function boot() {
     $('#page').innerHTML = `<div class="empty"><div>Library chart belum termuat.</div><div class="card-sub">Periksa koneksi CDN, lalu muat ulang.</div></div>`;
     return;
   }
-  const files = ['meta', 'overview', 'stations', 'time', 'sources', 'health', 'hospitals', 'network', 'method'];
+  const files = ['meta', 'overview', 'stations', 'time', 'sources', 'health', 'hospitals', 'network', 'method', 'hourly', 'pollutants', 'health_daily'];
   try {
     const payloads = await Promise.all(files.map((f) => fetch(`data/${f}.json`).then((r) => {
       if (!r.ok) throw new Error(`${f}.json ${r.status}`);
@@ -173,23 +180,30 @@ async function boot() {
   }
   DATA.stationsById = new Map(DATA.stations.stations.map((s) => [s.id, s]));
   DATA.islands = Array.from(new Set(DATA.stations.stations.map((s) => s.island)));
+  const per = DATA.meta && DATA.meta.periods;
+  if (per && per.data_start_iso) DATE_MIN = per.data_start_iso;
+  if (per && per.data_end_iso) DATE_MAX = per.data_end_iso;
   DATA.hospitalsById = new Map((DATA.hospitals.hospitals || []).map((h) => [h.id, h]));
   DATA.hospitalsByStation = new Map((DATA.hospitals.hospitals || []).map((h) => [h.station, h]));
   DATA.provincesByName = new Map((DATA.hospitals.provinces || []).map((p) => [p.province, p]));
+  DATA.stationDayIndex = {};
+  Object.entries(DATA.time.station_daily || {}).forEach(([id, rows]) => {
+    const m = new Map();
+    rows.forEach((r) => m.set(r[0], r[1]));
+    DATA.stationDayIndex[id] = m;
+  });
+  DATA.hourlyIndex = {};
+  ((DATA.hourly && DATA.hourly.dates) || []).forEach((d, i) => { DATA.hourlyIndex[d] = i; });
   parseUrl();
   initShell();
-  if (state.story) {
-    openStory(state.scene, false);
-  } else {
-    render();
-  }
+  applyRange();
+  render();
   fit();
   window.addEventListener('resize', () => {
     fit();
     requestAnimationFrame(() => {
       charts.forEach((c) => { try { c.resize(); } catch (_) {} });
       maps.forEach((m) => { try { m.resize(); } catch (_) {} });
-      if (storyChart) { try { storyChart.resize(); } catch (_) {} }
     });
   });
 }
@@ -197,6 +211,468 @@ async function boot() {
 function fit() {
   const app = $('#app');
   if (app) app.style.transform = '';
+}
+
+/* ------------------------------------------------------------ range engine */
+const EXCLUDED_STATIONS = new Set(['JMB-02', 'MER-01']);
+const RANGE_KEYS = ['hari', 'bulan', 'tahun', 'semua'];
+const RANGE_NAMES = { hari: 'Hari', bulan: 'Bulan', tahun: 'Tahun', semua: 'Semua' };
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+let DATE_MIN = '2024-01-01';
+let DATE_MAX = '2026-10-14';
+
+function clampDate(iso) {
+  if (!iso) return DATE_MAX;
+  return iso < DATE_MIN ? DATE_MIN : (iso > DATE_MAX ? DATE_MAX : iso);
+}
+
+function rangeBounds() {
+  const d = clampDate(state.date);
+  if (state.range === 'hari') return [d, d];
+  if (state.range === 'bulan') return [`${d.slice(0, 7)}-01`, d];
+  if (state.range === 'tahun') return [`${d.slice(0, 4)}-01-01`, d];
+  return [DATE_MIN, d];
+}
+
+function shortDate(iso) {
+  const [y, m, d] = iso.split('-');
+  return `${Number(d)} ${MONTH_ABBR[Number(m) - 1]} ${y}`;
+}
+
+function dayMonth(iso) {
+  const [, m, d] = iso.split('-');
+  return `${Number(d)} ${MONTH_ABBR[Number(m) - 1]}`;
+}
+
+function rangeText(from, to) {
+  if (from === to) return shortDate(from);
+  if (from.slice(0, 4) === to.slice(0, 4)) return `${dayMonth(from)}–${shortDate(to)}`;
+  return `${shortDate(from)} – ${shortDate(to)}`;
+}
+
+function rangeLabel() {
+  const [from, to] = rangeBounds();
+  return rangeText(from, to);
+}
+
+function shiftSpan(from, to, year) {
+  const shift = (iso) => {
+    const md = iso.slice(5);
+    const month = Number(md.slice(0, 2));
+    const dim = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const day = Math.min(Number(md.slice(3, 5)), dim);
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  };
+  return [shift(from), shift(to)];
+}
+
+function catOf(v) {
+  if (v == null) return null;
+  if (v <= 15.5) return 'Baik';
+  if (v <= 55.4) return 'Sedang';
+  if (v <= 150.4) return 'Tidak Sehat';
+  if (v <= 250.4) return 'Sangat Tidak Sehat';
+  return 'Berbahaya';
+}
+
+function compOf(vals) {
+  const counts = {};
+  CAT_ORDER.forEach((k) => { counts[k] = 0; });
+  vals.forEach((v) => { const c = catOf(v); if (c) counts[c] += 1; });
+  const n = vals.length || 1;
+  const out = {};
+  CAT_ORDER.forEach((k) => { out[k] = vals.length ? round1(counts[k] / n * 100) : 0; });
+  return out;
+}
+
+function dominantCat(comp) {
+  let best = null;
+  CAT_ORDER.forEach((k) => { if (comp && comp[k] > 0 && (best === null || comp[k] > comp[best])) best = k; });
+  return best || 'Tanpa data';
+}
+
+function quantile(sorted, q) {
+  if (!sorted.length) return null;
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (pos - lo) * (sorted[hi] - sorted[lo]);
+}
+
+function stationRange(id, from, to) {
+  const rows = (DATA.time.station_daily || {})[id] || [];
+  const vals = [];
+  for (const r of rows) if (r[0] >= from && r[0] <= to) vals.push(r[1]);
+  return vals;
+}
+
+function statsFrom(vals, stationCount) {
+  if (!vals.length) {
+    return { mean: null, days: 0, stations: 0, above55_pct: null, above55_n: 0, severe_n: 0, p95: null, max: null, comp: null };
+  }
+  const sorted = vals.slice().sort((a, b) => a - b);
+  let sum = 0;
+  let a55 = 0;
+  let sev = 0;
+  for (const v of vals) { sum += v; if (v > 55) a55 += 1; if (v > 150.4) sev += 1; }
+  return {
+    mean: round1(sum / vals.length),
+    days: vals.length,
+    stations: stationCount,
+    above55_pct: round1(a55 / vals.length * 100),
+    above55_n: a55,
+    severe_n: sev,
+    p95: round1(quantile(sorted, 0.95)),
+    max: round1(sorted[sorted.length - 1]),
+    comp: compOf(vals),
+  };
+}
+
+function scopeStationIds() {
+  return DATA.stations.stations.filter((s) => !EXCLUDED_STATIONS.has(s.id)).map((s) => s.id);
+}
+
+function statsForStations(ids, from, to) {
+  const per = {};
+  const all = [];
+  for (const id of ids) {
+    const v = stationRange(id, from, to);
+    if (!v.length) continue;
+    per[id] = statsFrom(v, 1);
+    for (const x of v) all.push(x);
+  }
+  return { all: statsFrom(all, Object.keys(per).length), per };
+}
+
+function dayValue(id, iso) {
+  const m = DATA.stationDayIndex && DATA.stationDayIndex[id];
+  if (!m) return null;
+  const v = m.get(iso);
+  return v == null ? null : v;
+}
+
+function dayCategory(id, iso) {
+  const v = dayValue(id, iso);
+  return v == null ? 'Tanpa data' : catOf(v);
+}
+
+function healthHospitalIds() {
+  return (DATA.hospitals.hospitals || [])
+    .filter((h) => state.island === 'Semua' || h.island === state.island)
+    .filter((h) => !state.station || h.station === state.station)
+    .map((h) => h.id);
+}
+
+function sumHealth(ids, from, to) {
+  const keys = (DATA.health_daily && DATA.health_daily.keys) || [];
+  const totals = {};
+  keys.forEach((k) => { totals[k] = 0; });
+  const days = new Set();
+  ids.forEach((id) => {
+    const rows = (DATA.health_daily.hospitals || {})[id] || [];
+    rows.forEach((r) => {
+      if (r[0] < from || r[0] > to) return;
+      days.add(r[0]);
+      for (let i = 0; i < keys.length; i += 1) totals[keys[i]] += r[i + 1] || 0;
+    });
+  });
+  return { days: days.size, actual: totals };
+}
+
+function healthYearsFor(ids, from, to) {
+  return [2024, 2025, 2026].map((y) => {
+    const [f, t] = shiftSpan(from, to, y);
+    const s = sumHealth(ids, f, t);
+    return { year: y, days: s.days, actual: s.actual };
+  });
+}
+
+function applyHealthRange(from, to) {
+  const keys = (DATA.health_daily && DATA.health_daily.keys) || [];
+  const ids = healthHospitalIds();
+  DATA.health.scopeYears = healthYearsFor(ids, from, to);
+  DATA.health.years = DATA.health.scopeYears;
+  const byIsland = {};
+  DATA.islands.forEach((isl) => {
+    const iids = (DATA.hospitals.hospitals || []).filter((h) => h.island === isl).map((h) => h.id);
+    byIsland[isl] = healthYearsFor(iids, from, to);
+  });
+  DATA.health.byIsland = byIsland;
+
+  const stations = [];
+  DATA.stations.stations.forEach((s) => {
+    const hids = (DATA.hospitals.hospitals || []).filter((h) => h.station === s.id).map((h) => h.id);
+    if (!hids.length) return;
+    const base = (DATA.health.stations || []).find((r) => r.station === s.id) || {};
+    const cur = sumHealth(hids, from, to);
+    const resp = cur.actual.resp || 0;
+    const u5 = cur.actual.resp_admissions_under5 || 0;
+    const o60 = cur.actual.resp_admissions_over60 || 0;
+    stations.push({
+      station: s.id,
+      island: s.island,
+      days: cur.days,
+      resp_actual: resp,
+      resp_under5_actual: u5,
+      resp_over60_actual: o60,
+      under5_share: resp ? round1(u5 / resp * 100) : null,
+      over60_share: resp ? round1(o60 / resp * 100) : null,
+      lag0: base.lag0 || {},
+      lag0_resp: base.lag0_resp,
+      episode_days: (DATA.view.byStation[s.id] || {}).above55_n || 0,
+      usable_pct: base.usable_pct,
+      status: base.status,
+      outcomes: Object.fromEntries(keys.map((k) => [k, cur.actual[k] || 0])),
+    });
+  });
+  stations.sort((a, b) => b.resp_actual - a.resp_actual);
+  DATA.health.stations = stations;
+}
+
+function applyHospitalRange(from, to) {
+  const keys = (DATA.health_daily && DATA.health_daily.keys) || [];
+  (DATA.hospitals.hospitals || []).forEach((h) => {
+    const s = sumHealth([h.id], from, to);
+    h.actual = s.actual;
+    h.days = s.days;
+    h.per100beds = h.beds ? round1(s.actual.resp / h.beds * 100) : null;
+  });
+  const daysSeen = (DATA.hospitals.hospitals || []).reduce((a, h) => Math.max(a, h.days || 0), 0);
+  if (DATA.hospitals.meta) {
+    DATA.hospitals.meta.days = daysSeen;
+    DATA.hospitals.meta.window = DATA.view.label;
+  }
+  const byProv = new Map();
+  (DATA.hospitals.hospitals || []).forEach((h) => {
+    const p = byProv.get(h.province) || {
+      province: h.province,
+      hospitals: 0,
+      beds: 0,
+      island: h.island,
+      actual: Object.fromEntries(keys.map((k) => [k, 0])),
+    };
+    p.hospitals += 1;
+    p.beds += h.beds || 0;
+    keys.forEach((k) => { p.actual[k] += h.actual[k] || 0; });
+    byProv.set(h.province, p);
+  });
+  const provinces = Array.from(byProv.values()).map((p) => ({
+    ...p,
+    beds: Math.round(p.beds),
+    per100beds: p.beds ? round1(p.actual.resp / p.beds * 100) : null,
+  }));
+  provinces.sort((a, b) => b.actual.resp - a.actual.resp);
+  DATA.hospitals.provinces = provinces;
+  DATA.provincesByName = new Map(provinces.map((p) => [p.province, p]));
+  const byIsland = {};
+  provinces.forEach((p) => {
+    const agg = byIsland[p.island] || { island: p.island, hospitals: 0, beds: 0, actual: Object.fromEntries(keys.map((k) => [k, 0])) };
+    agg.hospitals += p.hospitals;
+    agg.beds += p.beds;
+    keys.forEach((k) => { agg.actual[k] += p.actual[k]; });
+    byIsland[p.island] = agg;
+  });
+  DATA.hospitals.provinces_by_island = Object.values(byIsland).map((p) => ({
+    ...p,
+    per100beds: p.beds ? round1(p.actual.resp / p.beds * 100) : null,
+  }));
+}
+
+function applyWeekdayRange(from, to) {
+  const rows = [];
+  const islandRows = {};
+  const split = (src, f, t) => {
+    const wd = [];
+    const we = [];
+    src.forEach((r) => {
+      if (r[0] < f || r[0] > t) return;
+      const dow = new Date(`${r[0]}T00:00:00Z`).getUTCDay();
+      if (dow === 0 || dow === 6) we.push(r[1]); else wd.push(r[1]);
+    });
+    return {
+      weekday: wd.length ? round1(average(wd)) : null,
+      weekend: we.length ? round1(average(we)) : null,
+    };
+  };
+  [2024, 2025, 2026].forEach((y) => {
+    const [f, t] = shiftSpan(from, to, y);
+    rows.push({ year: y, ...split(DATA.time.daily || [], f, t) });
+    DATA.islands.forEach((isl) => {
+      (islandRows[isl] = islandRows[isl] || []).push({
+        year: y,
+        island: isl,
+        ...split((DATA.time.daily_island || {})[isl] || [], f, t),
+      });
+    });
+  });
+  DATA.time.weekday = rows;
+  DATA.time.weekday_island = Object.values(islandRows).flat();
+}
+
+function applySourceRange(from, to) {
+  const keys = (DATA.pollutants && DATA.pollutants.keys) || [];
+  const sums = {};
+  const counts = {};
+  const perStation = {};
+  keys.forEach((k) => { sums[k] = 0; counts[k] = 0; });
+  DATA.stations.stations.forEach((s) => {
+    if (EXCLUDED_STATIONS.has(s.id)) return;
+    const rows = (DATA.pollutants.stations || {})[s.id] || [];
+    const acc = {};
+    keys.forEach((k) => { acc[k] = { s: 0, n: 0 }; });
+    rows.forEach((r) => {
+      if (r[0] < from || r[0] > to) return;
+      for (let i = 0; i < keys.length; i += 1) {
+        const v = r[i + 1];
+        if (v == null) continue;
+        acc[keys[i]].s += v;
+        acc[keys[i]].n += 1;
+        sums[keys[i]] += v;
+        counts[keys[i]] += 1;
+      }
+    });
+    perStation[s.id] = acc;
+  });
+  const valueOf = (k) => (counts[k] ? round1(sums[k] / counts[k]) : null);
+  DATA.sources.pollutants = (DATA.sources.pollutants || []).map((p) => (
+    p.key === 'pm25'
+      ? { ...p, value: DATA.view.stats.mean, n: DATA.view.stats.days }
+      : { ...p, value: valueOf(p.key), n: counts[p.key] || 0 }
+  ));
+  DATA.sources.meteo = (DATA.sources.meteo || []).map((p) => ({ ...p, value: valueOf(p.key), n: counts[p.key] || 0 }));
+
+  const islandAgg = (isl) => {
+    const acc = {};
+    keys.forEach((k) => { acc[k] = { s: 0, n: 0 }; });
+    DATA.stations.stations.forEach((s) => {
+      if (s.island !== isl || !perStation[s.id]) return;
+      keys.forEach((k) => { acc[k].s += perStation[s.id][k].s; acc[k].n += perStation[s.id][k].n; });
+    });
+    return acc;
+  };
+  DATA.sources.pollutants_by_island = Object.fromEntries(DATA.islands.map((isl) => {
+    const acc = islandAgg(isl);
+    const islDays = (DATA.view.byIsland[isl] || {}).days || 0;
+    return [isl, (DATA.sources.pollutants || []).map((p) => ({
+      key: p.key,
+      label: p.label,
+      unit: p.unit,
+      value: p.key === 'pm25' ? ((DATA.view.byIsland[isl] || {}).mean ?? null) : (acc[p.key] && acc[p.key].n ? round1(acc[p.key].s / acc[p.key].n) : null),
+      n: p.key === 'pm25' ? islDays : (acc[p.key] ? acc[p.key].n : 0),
+    }))];
+  }));
+
+  const updateScatter = (rows) => (rows || []).map((r) => {
+    const st = DATA.view.byStation[r.station];
+    if (!st) return { ...r, pm25: null };
+    return { ...r, pm25: st.mean, days: st.days, episode_days: st.above55_n };
+  }).filter((r) => r.pm25 != null);
+  DATA.sources.all = updateScatter(DATA.sources.all);
+  DATA.sources.only2026 = updateScatter(DATA.sources.only2026);
+}
+
+function hourlySeries() {
+  const key = state.station ? null : (state.island === 'Semua' ? 'Nasional' : state.island);
+  if (key && DATA.hourly && DATA.hourly.scopes[key]) {
+    const [from, to] = rangeBounds();
+    const sums = new Array(24).fill(0);
+    const counts = new Array(24).fill(0);
+    const dates = DATA.hourly.dates || [];
+    const mat = DATA.hourly.scopes[key];
+    for (let i = 0; i < dates.length; i += 1) {
+      if (dates[i] < from || dates[i] > to) continue;
+      const row = mat[i];
+      for (let h = 0; h < 24; h += 1) {
+        const v = row[h];
+        if (v == null) continue;
+        sums[h] += v;
+        counts[h] += 1;
+      }
+    }
+    if (counts.some((c) => c > 0)) {
+      return sums.map((s, h) => ({ hour: h, pm25: counts[h] ? round1(s / counts[h]) : null, n: counts[h] }));
+    }
+  }
+  const st = state.station ? (DATA.time.station_hour[state.station] || []) : [];
+  if (st.length) return st;
+  return (state.island !== 'Semua' && DATA.time.hour_dow_by_island[state.island])
+    ? aggregateHours(DATA.time.hour_dow_by_island[state.island])
+    : (DATA.time.hour_dow_all ? aggregateHours(DATA.time.hour_dow_all) : []);
+}
+
+function applyRange() {
+  const [from, to] = rangeBounds();
+  state.date = clampDate(state.date);
+  const ids = scopeStationIds();
+  const { all, per } = statsForStations(ids, from, to);
+
+  const islandIds = {};
+  DATA.stations.stations.forEach((s) => {
+    if (EXCLUDED_STATIONS.has(s.id)) return;
+    (islandIds[s.island] = islandIds[s.island] || []).push(s.id);
+  });
+  const byIsland = {};
+  Object.keys(islandIds).forEach((isl) => {
+    const v = islandIds[isl].flatMap((id) => stationRange(id, from, to));
+    byIsland[isl] = statsFrom(v, islandIds[isl].filter((id) => stationRange(id, from, to).length).length);
+  });
+
+  DATA.overview.stats_window = { all, by_island: byIsland, by_station: per };
+  DATA.overview.island26 = Object.keys(byIsland)
+    .map((isl) => ({ island: isl, mean: byIsland[isl].mean, max: byIsland[isl].max, days: byIsland[isl].days, stations: byIsland[isl].stations }))
+    .sort((a, b) => (b.mean || 0) - (a.mean || 0));
+  DATA.overview.ispu_haze26_pct = Object.fromEntries(Object.keys(byIsland).map((isl) => [isl, byIsland[isl].comp]));
+  DATA.overview.ispu_station_pct = Object.fromEntries(Object.keys(per).map((id) => [id, per[id].comp]));
+  DATA.overview.top26 = ids.filter((id) => per[id]).map((id) => {
+    const s = DATA.stationsById.get(id);
+    return { station: id, island: s.island, site_class: s.site_class, mean: per[id].mean, p95: per[id].p95, max: per[id].max, days: per[id].days };
+  }).sort((a, b) => b.mean - a.mean);
+
+  const prev = shiftSpan(from, to, 2024);
+  const prevStats = state.range === 'semua' || to < '2025-01-01'
+    ? { mean: null }
+    : statsForStations(ids, prev[0], prev[1]).all;
+  const ratio = prevStats.mean ? all.mean / prevStats.mean : null;
+
+  DATA.view = { from, to, label: rangeText(from, to), name: RANGE_NAMES[state.range], stats: all, byIsland, byStation: per, ratio, date: state.date };
+  DATA.overview.kpis = [{
+    id: 'national',
+    value: all.mean,
+    ratio,
+    note: `${rangeText(from, to)} · ${fmtInt(all.days)} hari-stasiun · ${all.stations} stasiun`,
+  }];
+
+  DATA.stations.stations.forEach((s) => {
+    const st = per[s.id] || null;
+    s.mean_2026 = st ? st.mean : null;
+    s.p95_2026 = st ? st.p95 : null;
+    s.max_2026 = st ? st.max : null;
+    s.days_2026 = st ? st.days : 0;
+    s.ispu_dominant = st ? dominantCat(st.comp) : 'Tanpa data';
+    s.ispu_share = st ? st.comp[s.ispu_dominant] : null;
+    s.day_value = dayValue(s.id, state.date);
+    s.day_category = s.day_value == null ? 'Tanpa data' : catOf(s.day_value);
+  });
+
+  applyHealthRange(from, to);
+  applyHospitalRange(from, to);
+  applyWeekdayRange(from, to);
+  applySourceRange(from, to);
+}
+
+function syncRangeUi() {
+  const input = $('#filter-date');
+  if (input) {
+    input.min = DATE_MIN;
+    input.max = DATE_MAX;
+    input.value = state.date;
+  }
+  $$('#range-seg button').forEach((b) => {
+    const on = b.dataset.range === state.range;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
 }
 
 function parseUrl() {
@@ -207,15 +683,13 @@ function parseUrl() {
   if (island && (island === 'Semua' || DATA.islands.includes(island))) state.island = island;
   const station = p.get('station');
   if (station && DATA.stationsById.has(station)) state.station = station;
-  if (p.get('mode') === 'story') {
-    state.story = true;
-    const scene = Number(p.get('scene'));
-    if (scene >= 1 && scene <= 6) state.scene = scene;
-  }
+  const date = p.get('date');
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) state.date = clampDate(date);
+  const range = p.get('range');
+  if (RANGE_KEYS.includes(range)) state.range = range;
   const tab = p.get('tab');
   if (tab) state.tab[state.page] = tab;
   const src = p.get('source');
-  if (src === 'only2026' || src === 'all') state.sourceMode = src;
 }
 
 function updateUrl() {
@@ -223,13 +697,10 @@ function updateUrl() {
   if (state.page !== 'ringkasan') p.set('page', state.page);
   if (state.island !== 'Semua') p.set('island', state.island);
   if (state.station) p.set('station', state.station);
+  if (state.date !== '2026-10-14') p.set('date', state.date);
+  if (state.range !== 'tahun') p.set('range', state.range);
   const t = state.tab[state.page];
   if (t) p.set('tab', t);
-  if (state.sourceMode !== 'all') p.set('source', state.sourceMode);
-  if (state.story) {
-    p.set('mode', 'story');
-    p.set('scene', String(state.scene));
-  }
   const q = p.toString();
   history.replaceState(history.state, '', q ? `?${q}` : location.pathname);
 }
@@ -252,36 +723,45 @@ function initShell() {
       const st = DATA.stationsById.get(state.station);
       if (st && state.island !== 'Semua' && st.island !== state.island) state.station = null;
     }
+    applyRange();
     render();
   });
   stationSel.addEventListener('change', () => {
     state.station = stationSel.value || null;
     if (!state.station && state.page === 'ringkasan') state.origin = null;
+    applyRange();
     render();
   });
+  const dateInput = $('#filter-date');
+  if (dateInput) {
+    dateInput.addEventListener('change', () => {
+      const next = clampDate(dateInput.value);
+      if (!next) return;
+      state.date = next;
+      applyRange();
+      render();
+    });
+  }
+  $$('#range-seg button').forEach((b) => b.addEventListener('click', () => {
+    if (!RANGE_KEYS.includes(b.dataset.range)) return;
+    state.range = b.dataset.range;
+    applyRange();
+    render();
+  }));
   $('#btn-reset').addEventListener('click', () => {
     state.island = 'Semua';
     state.station = null;
+    state.date = DATE_MAX;
+    state.range = 'tahun';
+    applyRange();
     render();
   });
   $$('.nav-item').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
     go(a.dataset.page);
   }));
-  $$('#mode-switch button').forEach((b) => b.addEventListener('click', () => {
-    if (b.dataset.mode === 'story') openStory(1);
-    else { closeStory(); go('ringkasan'); }
-  }));
   $('#btn-share').addEventListener('click', shareLink);
   $('#more-share').addEventListener('click', () => { closeMore(); shareLink(); });
-  $('#story-close').addEventListener('click', closeStory);
-  $('#story-prev').addEventListener('click', () => setScene(state.scene - 1));
-  $('#story-next').addEventListener('click', () => {
-    if (state.scene === 6) closeStory();
-    else setScene(state.scene + 1);
-  });
-  $('#story-dots').innerHTML = Array.from({ length: 6 }, (_, i) => `<button class="story-dot" data-scene="${i + 1}" type="button" aria-label="Adegan ${i + 1}"></button>`).join('');
-  $$('#story-dots .story-dot').forEach((b) => b.addEventListener('click', () => setScene(Number(b.dataset.scene))));
   const chip = $('#back-chip');
   if (chip) chip.addEventListener('click', () => {
     const s = history.state || {};
@@ -313,11 +793,6 @@ function initShell() {
       if (state.detail) dismissDetail();
       else if (document.body.classList.contains('filters-open')) closeFilters();
       else if (!$('#more-sheet').hidden) closeMore();
-      else if (state.story) closeStory();
-    }
-    if (state.story) {
-      if (e.key === 'ArrowRight') setScene(state.scene + 1);
-      if (e.key === 'ArrowLeft') setScene(state.scene - 1);
     }
   });
   $('#page').addEventListener('click', onPageClick);
@@ -348,7 +823,6 @@ function initMobileChrome() {
     sheet.hidden = !open;
     $('#btn-more').setAttribute('aria-expanded', String(open));
   });
-  $('#more-story').addEventListener('click', () => { closeMore(); openStory(1); });
   $('#btn-filter-mobile').addEventListener('click', openFilters);
   $('#btn-filter-close').addEventListener('click', closeFilters);
   $('#btn-filter-apply').addEventListener('click', closeFilters);
@@ -439,12 +913,6 @@ function onPageClick(e) {
     setHealthTable(healthTable.dataset.healthTable === 'rs' ? 'rs' : 'stasiun');
     return;
   }
-  const src = e.target.closest('[data-source]');
-  if (src) {
-    state.sourceMode = src.dataset.source;
-    render();
-    return;
-  }
   const st = e.target.closest('[data-station]');
   if (st) {
     state.station = st.dataset.station;
@@ -484,7 +952,7 @@ function onPageClick(e) {
       downloadCSV('napas_sumber.csv', [['station', 'pm25', 'baseline', 'distance', 'traffic', 'days', 'status'], ...rows.map((r) => [r.station, r.pm25, r.baseline, r.distance, r.traffic, r.days, r.status])]);
     }
     if (a === 'download-health') {
-      downloadCSV('napas_kesehatan.csv', [['outcome', 'actual', 'expected', 'excess'], ...DATA.health.outcomes.map((o) => [o.label, DATA.health.years[2].actual[o.key], DATA.health.years[2].expected[o.key], DATA.health.years[2].excess[o.key]])]);
+      downloadCSV('napas_kesehatan.csv', [['outcome', 'kunjungan', 'hari', 'rentang'], ...DATA.health.outcomes.map((o) => [o.label, DATA.health.years[2].actual[o.key] || 0, DATA.health.years[2].days, DATA.view.label])]);
     }
     if (a === 'download-daily') {
       downloadCSV('napas_harian_nasional.csv', [['date', 'pm25', 'stations'], ...DATA.time.daily.map((r) => [r[0], r[1], r[2]])]);
@@ -532,7 +1000,6 @@ function pageSnapshot() {
     island: state.island,
     station: state.station,
     tab: { ...state.tab },
-    sourceMode: state.sourceMode,
     scrollTop: ($('#page') && $('#page').scrollTop) || 0,
   };
 }
@@ -565,7 +1032,6 @@ function returnToOrigin() {
   state.island = origin.island;
   state.station = origin.station;
   state.tab = { ...origin.tab };
-  state.sourceMode = origin.sourceMode;
   state.pendingScroll = origin.scrollTop;
   render();
   renderBackChip();
@@ -729,7 +1195,7 @@ function detailIslandCategory(island, cat) {
     <div class="detail-block"><div class="detail-label">Porsi hari per stasiun</div>
       ${detailBars(rows.map((r) => ({ label: r.id, value: r.pct, id: r.id, color: CAT_COLORS[cat] || C.navy, display: `${fmt(r.pct, 1)}%` })))}
     </div>
-    <div class="detail-note">Klik stasiun untuk membuka profil · 1 Agu–14 Okt 2026</div>`;
+    <div class="detail-note">Klik stasiun untuk membuka profil · ${esc(DATA.view.label)}</div>`;
   return {
     key: `islandcat:${island}:${cat}`,
     kicker: `Komposisi ISPU · ${island}`,
@@ -758,10 +1224,10 @@ function detailIsland(name) {
     <div class="detail-block"><div class="detail-label">Komposisi ISPU</div>${detailStack(pct, isl.days)}</div>
     <div class="detail-block"><div class="detail-label">Tren bulanan · µg/m³</div>${detailBars(months.map((r) => ({ label: monthLabel(r.month), value: r.pm25, color: CAT_COLORS[categoryFromPm(r.pm25)] || C.navy })))}</div>
     <div class="detail-block"><div class="detail-label">Stasiun terberat</div>${detailBars(stations.slice(0, 6).map((s) => ({ label: s.id, value: s.mean_2026, id: s.id, color: CAT_COLORS[categoryFromPm(s.mean_2026)] || C.navy })))}</div>
-    <div class="detail-list"><div class="row"><span>Hari >55 µg/m³</span><b>${fmtInt(episode)}</b></div></div>`;
+    <div class="detail-list"><div class="row"><span>Hari >55 µg/m³ · seluruh periode</span><b>${fmtInt(episode)}</b></div></div>`;
   return {
     key: `island:${name}`,
-    kicker: 'Ranking pulau · 1 Agu–14 Okt 2026',
+    kicker: `Ranking pulau · ${DATA.view.label}`,
     title: name,
     chip: name,
     body,
@@ -953,11 +1419,11 @@ function bindRowActivate(selector, attr, make) {
 }
 
 function stationTip(s) {
-  const cat = s.ispu_dominant || '—';
-  const val = `${s.lower_bound ? '≥' : ''}${fmt(s.mean_2026, 1)}`;
+  const cat = s.day_category || '—';
+  const day = s.day_value == null ? '—' : fmt(s.day_value, 1);
   return `<div class="map-tip-h"><span class="dot" style="background:${catColor(cat)}"></span><b>${esc(s.id)}</b><span class="cat">${esc(cat)}</span></div>`
-    + `<div class="map-tip-n">${val}<small> µg/m³</small><small class="sep"> · P95 ${fmt(s.p95_2026, 1)}</small></div>`
-    + `<div class="map-tip-s">${esc(s.city)}</div>`;
+    + `<div class="map-tip-n">${day}<small> µg/m³</small><small class="sep"> · ${esc(shortDate(state.date))}</small></div>`
+    + `<div class="map-tip-s">${esc(s.city)} · rata-rata ${fmt(s.mean_2026, 1)}</div>`;
 }
 
 function detailStation(id, opts = {}) {
@@ -969,15 +1435,16 @@ function detailStation(id, opts = {}) {
   const rank = topRowsFull().findIndex((r) => r.id === id) + 1;
   const body = `
     ${detailMetrics([
-      ['PM2.5 2026', `${st.lower_bound ? '≥' : ''}${fmt(st.mean_2026, 1)}`, 'µg/m³'],
+      ['Pada acuan', st.day_value == null ? '—' : fmt(st.day_value, 1), 'µg/m³'],
+      ['Rata-rata', `${st.lower_bound ? '≥' : ''}${fmt(st.mean_2026, 1)}`, 'µg/m³'],
       ['P95', fmt(st.p95_2026, 1), 'µg/m³'],
       ['Maksimum', fmt(st.max_2026, 1), 'µg/m³'],
-      ['Kelayakan', fmt(st.usable_pct, 1), '%'],
     ])}
-    <div class="detail-block"><div class="detail-label">Komposisi ISPU</div>${detailStack(comp, st.days_2026)}</div>
+    <div class="detail-block"><div class="detail-label">Komposisi ISPU · ${esc(DATA.view.label)}</div>${detailStack(comp, st.days_2026)}</div>
     <div class="detail-block"><div class="detail-label">12 bulan terakhir</div>${detailBars(months.map((r) => ({ label: monthLabel(r.month), value: r.pm25, color: CAT_COLORS[categoryFromPm(r.pm25)] || C.navy })))}</div>
     <div class="detail-list">
       <div class="row"><span>Kota · provinsi</span><b>${esc(st.city)} · ${esc(st.province)}</b></div>
+      <div class="row"><span>Tanggal acuan</span><b>${esc(shortDate(state.date))} · ${esc(st.day_category)}</b></div>
       <div class="row"><span>Peringkat nasional</span><b>${rank || '—'}/${topRowsFull().length}</b></div>
       <div class="row"><span>Hari layak</span><b>${fmtInt(st.days_2026)} hari</b></div>
     </div>
@@ -1127,30 +1594,28 @@ function detailOutcome(key) {
   const years = healthYears();
   const y = years[years.length - 1];
   if (!y) return null;
-  const a = y.actual[key];
-  const e = y.expected[key];
-  const ex = y.excess[key];
+  const a = y.actual[key] || 0;
   const totalResp = y.actual.resp || 0;
   const scope = state.island === 'Semua' ? 'nasional' : state.island;
   const body = `
     ${detailMetrics([
-      ['Aktual', fmtInt(a), 'kasus'],
-      ['Expected', fmtInt(e), 'kasus'],
-      ['Kelebihan', `+${fmtInt(ex)}`, 'kasus'],
+      ['Kunjungan', fmtInt(a), 'kasus'],
+      ['Hari', fmtInt(y.days), 'hari'],
+      ['Porsi respirasi', totalResp ? `${fmt(a / totalResp * 100, 1)}%` : '—', ''],
     ])}
-    <div class="detail-block"><div class="detail-label">Kelebihan per tahun</div>
-      ${detailBars(years.map((r) => ({ label: String(r.year), value: r.excess[key], color: r.year === y.year ? C.navy : C.grey2, display: `+${fmtInt(r.excess[key])}` })))}
+    <div class="detail-block"><div class="detail-label">Kunjungan per tahun · rentang sama</div>
+      ${detailBars(years.map((r) => ({ label: String(r.year), value: r.actual[key] || 0, color: r.year === y.year ? C.navy : C.grey2, display: fmtInt(r.actual[key] || 0) })))}
     </div>
     <div class="detail-list">
-      <div class="row"><span>Rasio aktual / expected</span><b>${e ? `${fmt(a / e, 2)}×` : '—'}</b></div>
-      <div class="row"><span>Porsi dari respirasi</span><b>${totalResp ? `${fmt(a / totalResp * 100, 1)}%` : '—'}</b></div>
-      <div class="row"><span>Jendela</span><b>${y.days} hari</b></div>
+      <div class="row"><span>Rentang</span><b>${esc(DATA.view.label)}</b></div>
+      <div class="row"><span>Hari tercatat</span><b>${y.days} hari</b></div>
+      <div class="row"><span>Rumah sakit</span><b>${healthHospitalIds().length}</b></div>
     </div>
-    <div class="detail-note">Estimasi asosiatif: aktual − expected, bukan klaim kausal</div>
+    <div class="detail-note">Kunjungan yang tercatat di rumah sakit mitra, bukan kasus yang diatribusikan ke PM2.5.</div>
     <button class="primary-btn detail-cta" type="button" data-detail-go="kesehatan">Buka Kesehatan</button>`;
   return {
     key: `outcome:${key}`,
-    kicker: `Observed vs expected · ${scope} · 1 Agu–14 Okt 2026`,
+    kicker: `Kunjungan aktual · ${scope} · ${DATA.view.label}`,
     title: o.label,
     chip: o.label,
     body,
@@ -1164,26 +1629,26 @@ function detailOutcome(key) {
 function detailHealthYear(year) {
   const r = (DATA.health.years || []).find((x) => x.year === year);
   if (!r) return null;
-  const isl = (DATA.health.by_island || {});
+  const isl = (DATA.health.byIsland || {});
   const islRows = Object.keys(isl).map((name) => {
     const row = (isl[name] || []).find((x) => x.year === year);
-    return { label: name, value: row ? row.excess.resp : 0, color: ISLAND_COLORS[name] || C.navy, display: row ? `+${fmtInt(row.excess.resp)}` : '—' };
+    return { label: name, value: row ? row.actual.resp : 0, color: ISLAND_COLORS[name] || C.navy, display: row ? fmtInt(row.actual.resp) : '—' };
   }).filter((x) => x.value > 0).sort((a, b) => b.value - a.value);
   const body = `
     ${detailMetrics([
       ['Hari', fmtInt(r.days), 'hari'],
-      ['Respirasi', `+${fmtInt(r.excess.resp)}`, 'kasus'],
-      ['Kematian', `+${fmtInt(r.excess.death)}`, 'kasus'],
+      ['Respirasi', fmtInt(r.actual.resp), 'kasus'],
+      ['Kematian', fmtInt(r.actual.death), 'kasus'],
     ])}
-    <div class="detail-block"><div class="detail-label">Kelebihan respirasi per pulau</div>${detailBars(islRows)}</div>
+    <div class="detail-block"><div class="detail-label">Kunjungan respirasi per pulau</div>${detailBars(islRows)}</div>
     <div class="detail-list">
-      <div class="row"><span>Aktual respirasi</span><b>${fmtInt(r.actual.resp)}</b></div>
-      <div class="row"><span>Expected respirasi</span><b>${fmtInt(r.expected.resp)}</b></div>
-      <div class="row"><span>Aktual kematian</span><b>${fmtInt(r.actual.death)}</b></div>
+      <div class="row"><span>Balita</span><b>${fmtInt(r.actual.resp_admissions_under5)}</b></div>
+      <div class="row"><span>Lansia 60+</span><b>${fmtInt(r.actual.resp_admissions_over60)}</b></div>
+      <div class="row"><span>Rentang</span><b>${esc(DATA.view.label)}</b></div>
     </div>`;
   return {
     key: `healthyear:${year}`,
-    kicker: 'Kelebihan per tahun',
+    kicker: 'Kunjungan aktual per tahun',
     title: String(year),
     chip: String(year),
     body,
@@ -1252,14 +1717,16 @@ function detailHealthStation(id) {
   const body = `
     ${detailMetrics([
       ['r lag 0', fmtR(r.lag0_resp), ''],
-      ['Kunjungan aktual', fmtInt(r.resp_actual), 'kasus'],
-      ['Kelebihan', `+${fmtInt(r.resp)}`, 'kasus'],
+      ['Kunjungan', fmtInt(r.resp_actual), 'kasus'],
+      ['Balita', fmtInt(r.resp_under5_actual), 'kasus'],
     ])}
     <div class="detail-block"><div class="detail-label">r lag 0 per outcome</div>${detailBars(bars)}</div>
     <div class="detail-list">
-      <div class="row"><span>Hari episode</span><b>${fmtInt(r.episode_days)} hari</b></div>
+      <div class="row"><span>Lansia 60+</span><b>${fmtInt(r.resp_over60_actual)} kasus</b></div>
+      <div class="row"><span>Hari episode &gt;55</span><b>${fmtInt(r.episode_days)} hari</b></div>
       <div class="row"><span>Hari layak</span><b>${fmt(r.usable_pct, 1)}%</b></div>
       <div class="row"><span>Status</span><b>${esc(r.status)}</b></div>
+      <div class="row"><span>Rentang</span><b>${esc(DATA.view.label)}</b></div>
     </div>
     <button class="primary-btn detail-cta" type="button" data-station="${esc(id)}">Buka profil stasiun</button>`;
   return {
@@ -1274,12 +1741,12 @@ function detailHealthStation(id) {
 /* ---------------------------------------------------------- detail: jaringan */
 function provToggleHtml() {
   const mk = (key, label) => `<button type="button" data-provmetric="${key}" class="${state.provMetric === key ? 'active' : ''}" aria-pressed="${state.provMetric === key}">${label}</button>`;
-  return `<div class="seg" role="group" aria-label="Metrik peta provinsi">${mk('actual', 'Kasus')}${mk('per100', 'per 100 tempat tidur')}</div>`;
+  return `<div class="seg" role="group" aria-label="Metrik peta provinsi">${mk('actual', 'Kunjungan')}${mk('per100', 'per 100 tempat tidur')}</div>`;
 }
 
 function per100Unit() {
   const days = (DATA.hospitals.meta && DATA.hospitals.meta.days) || '';
-  return `kasus per 100 tempat tidur · ${days} hari`;
+  return `kunjungan per 100 tempat tidur · ${days} hari`;
 }
 
 function hospitalRows() {
@@ -1292,15 +1759,15 @@ function detailHospital(id) {
   const h = DATA.hospitalsById.get(id);
   if (!h) return null;
   const labels = Object.fromEntries((DATA.hospitals.outcomes || []).map((o) => [o.key, o.label]));
-  const outcomes = (DATA.hospitals.outcomes || []).map((o) => ({ key: o.key, label: labels[o.key], value: h.excess[o.key], color: o.key === 'resp' ? C.navy : C.grey2, display: `+${fmtInt(h.excess[o.key])}` }));
+  const outcomes = (DATA.hospitals.outcomes || []).map((o) => ({ key: o.key, label: labels[o.key], value: (h.actual || {})[o.key] || 0, color: o.key === 'resp' ? C.navy : C.grey2, display: fmtInt((h.actual || {})[o.key] || 0) }));
   const months = (h.monthly || []).slice(-13);
   const max = Math.max(...months.map((m) => m.v || 0), 1);
   const spark = months.map((m) => `<span class="hspark-bar${m.partial ? ' partial' : ''}" style="height:${Math.max(3, (m.v / max) * 100)}%" data-tip="${esc(monthFull(m.m))} · ${fmtInt(m.v)} kunjungan"></span>`).join('');
   const body = `
     ${detailMetrics([
-      ['Kasus', fmtInt(h.actual.resp), 'kasus'],
-      ['Kelebihan', `+${fmtInt(h.excess.resp)}`, 'kasus'],
-      ['Kasus per 100 tempat tidur', fmt(h.per100beds, 0), 'kasus'],
+      ['Kunjungan', fmtInt(h.actual.resp), 'kasus'],
+      ['Kunjungan per 100 TT', fmt(h.per100beds, 0), 'kasus'],
+      ['Hari', fmtInt(h.days), 'hari'],
     ])}
     <div class="detail-list">
       <div class="row"><span>Tempat tidur</span><b>${fmtInt(h.beds)}</b></div>
@@ -1308,10 +1775,10 @@ function detailHospital(id) {
       <div class="row"><span>Kota</span><b>${esc(h.city)} · ${esc(h.kecamatan)}</b></div>
       <div class="row"><span>Provinsi</span><b>${esc(h.province)}</b></div>
       <div class="row"><span>Stasiun</span><b class="mono">${esc(h.station || '—')}</b></div>
-      <div class="row"><span>Kelebihan per 100 tempat tidur</span><b>${fmt(h.per100beds_excess, 0)} kasus</b></div>
+      <div class="row"><span>Rentang</span><b>${esc(DATA.view.label)}</b></div>
     </div>
     <div class="detail-block"><div class="detail-label">Kunjungan respirasi bulanan</div><div class="hspark">${spark}</div><div class="detail-note">${months.length} bulan terakhir · batang pucat = bulan parsial</div></div>
-    <div class="detail-block"><div class="detail-label">Kelebihan per outcome · ${h.days} hari</div>${detailBars(outcomes)}</div>
+    <div class="detail-block"><div class="detail-label">Kunjungan per outcome · ${h.days} hari</div>${detailBars(outcomes)}</div>
     <div class="detail-note">Kasus = kunjungan tercatat, bukan kasus yang diatribusikan ke PM2.5.</div>
     <button class="primary-btn detail-cta" type="button" data-station="${esc(h.station || '')}">Buka profil stasiun</button>`;
   return {
@@ -1335,15 +1802,14 @@ function detailProvince(name) {
     </button>`).join('');
   const body = `
     ${detailMetrics([
-      ['Kasus', fmtInt(p.actual.resp), 'kasus'],
-      ['Kelebihan', `+${fmtInt(p.excess.resp)}`, 'kasus'],
-      ['Kasus per 100 tempat tidur', fmt(p.per100beds, 0), 'kasus'],
+      ['Kunjungan', fmtInt(p.actual.resp), 'kasus'],
+      ['Kunjungan per 100 TT', fmt(p.per100beds, 0), 'kasus'],
+      ['Hari', fmtInt(p.days || DATA.hospitals.meta.days), 'hari'],
     ])}
     <div class="detail-list">
       <div class="row"><span>Rumah sakit</span><b>${p.hospitals}</b></div>
       <div class="row"><span>Tempat tidur</span><b>${fmtInt(p.beds)}</b></div>
-      <div class="row"><span>Kelebihan per 100 tempat tidur</span><b>${fmt(p.per100beds_excess, 0)} kasus</b></div>
-      <div class="row"><span>Jendela</span><b>${esc(DATA.hospitals.meta.window)} · ${p.days || DATA.hospitals.meta.days} hari</b></div>
+      <div class="row"><span>Rentang</span><b>${esc(DATA.view.label)}</b></div>
     </div>
     <div class="detail-block"><div class="detail-label">Kasus per 100 tempat tidur · per RS</div><div class="dlist wide">${bars || '<div class="detail-note">Tidak ada RS mitra di provinsi ini.</div>'}</div></div>
     <div class="detail-note">Klik baris untuk membuka rumah sakit. Warna provinsi mengikuti RS mitra, bukan sensus kasus.</div>
@@ -1368,20 +1834,20 @@ function detailQc(segment) {
   const v = totals[segment];
   if (v == null) return null;
   const grand = Object.values(totals).reduce((a, b) => a + b, 0) || 1;
-  const bars = Object.entries(qc).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => ({ label: k, value: n, color: k === segment ? C.navy : C.grey2, display: fmtInt(n) }));
+  const bars = Object.entries(qc).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => ({ label: qcLabel(k), value: n, color: k === segment ? C.navy : C.grey2, display: fmtInt(n) }));
   const body = `
     ${detailMetrics([
       ['Baris', fmtInt(v), 'baris'],
       ['Porsi', fmt(v / grand * 100, 1), '%'],
-      ['Segmen', esc(segment), ''],
+      ['Segmen', qcLabel(segment), ''],
     ])}
-    <div class="detail-block"><div class="detail-label">Rincian status QC</div>${detailBars(bars)}</div>
+    <div class="detail-block"><div class="detail-label">Rincian pemeriksaan data</div>${detailBars(bars)}</div>
     <div class="detail-note">Total baris tersegmentasi ${fmtInt(grand)}</div>`;
   return {
     key: `qc:${segment}`,
-    kicker: 'Komposisi QC · 2024–2026',
-    title: segment,
-    chip: segment,
+    kicker: 'Pemeriksaan data · 2024–2026',
+    title: qcLabel(segment),
+    chip: qcLabel(segment),
     body,
   };
 }
@@ -1422,15 +1888,15 @@ function detailNetworkStation(id) {
     ${detailMetrics([
       ['Hari layak', fmt(s.usable_pct, 1), '%'],
       ['Gap data', fmt(s.gap, 1), '%'],
-      ['Baris VALID', valid == null ? '—' : fmt(valid, 1), '%'],
+      ['Baris lolos', valid == null ? '—' : fmt(valid, 1), '%'],
     ])}
     <div class="detail-block"><div class="detail-label">Kelengkapan 12 bulan</div>
       ${detailBars(comp.map((r) => ({ label: monthLabel(r.month), value: r.pct, color: r.pct < 80 ? C.terra : r.pct < 95 ? C.yellow : C.teal, display: `${fmt(r.pct, 0)}%` })))}
     </div>
     <div class="detail-list">
       <div class="row"><span>Status</span><b>${esc(s.status)}</b></div>
-      <div class="row"><span>Mean 2026</span><b>${fmt(s.mean_2026, 1)} µg/m³</b></div>
-      <div class="row"><span>Hari 2026</span><b>${fmtInt(s.days_2026)} hari</b></div>
+      <div class="row"><span>Rata-rata</span><b>${fmt(s.mean_2026, 1)} µg/m³</b></div>
+      <div class="row"><span>Hari data</span><b>${fmtInt(s.days_2026)} hari</b></div>
     </div>
     <button class="primary-btn detail-cta" type="button" data-station="${esc(id)}">Buka profil stasiun</button>`;
   return {
@@ -1463,8 +1929,10 @@ function render() {
   if (moreBtn) moreBtn.classList.toggle('active', !['ringkasan', 'waktu', 'wilayah', 'kesehatan'].includes(state.page));
   $$('.more-item[data-page]').forEach((a) => a.classList.toggle('active', a.dataset.page === state.page));
   syncFilters();
-  $('#period-pill').textContent = periodLabel();
+  syncRangeUi();
   $('#foot-hash').textContent = `metrics ${DATA.meta.metrics_sha256.slice(0, 12)}…`;
+  const footEnd = $('#foot-end');
+  if (footEnd) footEnd.textContent = `Data hingga ${DATA.meta.periods.data_end}`;
   $('#page').innerHTML = renderPage();
   updateUrl();
   requestAnimationFrame(() => {
@@ -1477,15 +1945,7 @@ function render() {
 }
 
 function periodLabel() {
-  switch (state.page) {
-    case 'waktu': return '2024–2026';
-    case 'wilayah': return DATA.meta.periods.haze;
-    case 'sumber': return state.sourceMode === 'all' ? '2024–2026' : '2026';
-    case 'kesehatan': return DATA.meta.periods.haze;
-    case 'jaringan': return 'seluruh periode';
-    case 'metodologi': return 'seluruh periode';
-    default: return DATA.meta.periods.window;
-  }
+  return rangeLabel();
 }
 
 function syncFilters() {
@@ -1596,22 +2056,24 @@ function overviewKpis() {
   const cat = categoryFromPm(scope.mean);
   const top = topRowsFull();
   const topStation = state.station ? (DATA.stationsById.get(state.station) || top[0]) : top[0];
-  const topLabel = topStation ? `${topStation.lower_bound ? '≥' : ''}${fmt(topStation.mean_2026 ?? scope.mean, 1)}` : '—';
-  const health = healthYears()[2];
-  const scopedHealth = state.station ? healthStationExcess(state.station) : null;
+  const topLabel = topStation ? `${fmt(topStation.mean_2026 ?? scope.mean, 1)}` : '—';
+  const years = healthYears();
+  const cur = years[years.length - 1];
   const scopeName = state.station || (state.island === 'Semua' ? 'nasional' : state.island);
-  const resp = scopedHealth ? scopedHealth.resp : health.excess.resp;
-  const respDays = scopedHealth ? scopedHealth.days : health.days;
+  const resp = cur ? cur.actual.resp : null;
+  const respDays = cur ? cur.days : null;
   const ratioRow = (DATA.overview.kpis || []).find((k) => k.id === 'national');
   const ratio = ratioRow && ratioRow.ratio ? `${fmt(ratioRow.ratio, 2)}× 2024` : '—';
+  const label = DATA.view.label;
   return [
     {
       id: 'mean', label: 'Rata-rata PM2.5', value: scope.mean, unit: 'µg/m³',
-      baseline: catBadge(cat), window: '1 Sep–14 Okt',
-      note: `${scopeName} · n=${fmtInt(scope.days)} hari-stasiun · ${scope.stations} stasiun · exclude JMB-02/MER-01`,
+      baseline: catBadge(cat), window: DATA.view.name,
+      note: `${scopeName} · n=${fmtInt(scope.days)} hari-stasiun · ${scope.stations} stasiun · ${label}`,
       tip: [
         ['Definisi', 'Rata-rata PM2.5 harian tiap stasiun, lalu dirata-rata'],
         ['Cakupan', `${fmtInt(scope.days)} hari-stasiun · ${scope.stations} stasiun`],
+        ['Rentang', label],
         ['Ambang', 'PP 55 · WHO 15 µg/m³'],
         ['Pembanding', ratio],
       ],
@@ -1619,48 +2081,46 @@ function overviewKpis() {
     },
     {
       id: 'above55', label: 'Hari melampaui 55 µg/m³', value: scope.above55_pct, unit: '%',
-      baseline: `${fmtInt(scope.severe_n)} hari >150,4`, window: '1 Sep–14 Okt',
-      note: `${scopeName} · ${fmtInt(scope.above55_n)} hari-stasiun >55 dari ${fmtInt(scope.days)} hari`,
+      baseline: `${fmtInt(scope.severe_n)} hari >150,4`, window: DATA.view.name,
+      note: `${scopeName} · ${fmtInt(scope.above55_n)} dari ${fmtInt(scope.days)} hari-stasiun · ${label}`,
       tip: [
         ['Definisi', 'Porsi hari-stasiun dengan PM2.5 di atas 55 µg/m³'],
         ['Hitung', `${fmtInt(scope.above55_n)} dari ${fmtInt(scope.days)} hari-stasiun`],
+        ['Rentang', label],
         ['Ambang', '55 = batas PP · 150,4 = ISPU Tidak Sehat'],
-        ['Pembanding', ratio],
       ],
       tipNote: 'Satu hari-stasiun = satu stasiun pada satu hari.',
     },
     {
       id: 'heaviest', label: 'Stasiun terberat', value: topLabel, unit: topStation ? ` ${topStation.id}` : '',
-      baseline: `${categoryFromPm(topStation ? topStation.mean_2026 : 0)} · ISPU`, window: '1 Agu–14 Okt',
-      note: topStation ? `${topStation.id} · ${topStation.lower_bound ? '≥' : ''}${fmt(topStation.mean_2026, 1)} µg/m³ · 1 Agu–14 Okt 2026` : 'Tidak ada stasiun pada filter',
+      baseline: `${categoryFromPm(topStation ? topStation.mean_2026 : 0)} · ISPU`, window: DATA.view.name,
+      note: topStation ? `${topStation.id} · ${fmt(topStation.mean_2026, 1)} µg/m³ · ${label}` : 'Tidak ada stasiun pada filter',
       tip: topStation ? [
         ['Stasiun', topStation.id],
         ['Kota', topStation.city],
-        ['Mean', `${topStation.lower_bound ? '≥' : ''}${fmt(topStation.mean_2026, 1)} µg/m³`],
+        ['Rata-rata', `${fmt(topStation.mean_2026, 1)} µg/m³`],
         ['Peringkat', `1 dari ${top.length} stasiun`],
         ['Status', topStation.status],
       ] : [],
       tipNote: topStation ? 'Nilai batas bawah bila sensor menyentuh 999.' : 'Tidak ada stasiun pada filter ini.',
     },
     {
-      id: 'resp', label: 'Estimasi kelebihan respirasi', value: resp, unit: 'kasus',
-      baseline: 'estimasi asosiatif', window: '1 Agu–14 Okt',
-      note: `${scopeName} · 1 Agu–14 Okt 2026 · ${respDays} hari · aktual − expected; bukan kausal`,
+      id: 'resp', label: 'Kunjungan respirasi', value: resp, unit: 'kasus',
+      baseline: 'aktual rumah sakit', window: DATA.view.name,
+      note: `${scopeName} · ${label} · ${respDays} hari · ${DATA.hospitals.meta.count} RS`,
       tip: [
-        ['Definisi', 'Aktual − expected kunjungan respirasi'],
-        ['Expected', 'Rata-rata harian Jan–Jun 2026 × jumlah hari'],
+        ['Definisi', 'Jumlah kunjungan/rawat inap respirasi yang tercatat'],
         ['Cakupan', `${respDays} hari · rumah sakit mitra`],
-        ['Sifat', 'Asosiatif, bukan kausal'],
+        ['Rentang', label],
+        ['Sifat', 'Aktual, bukan estimasi atau klaim kausal'],
       ],
       tipNote: 'Kunjungan rumah sakit, bukan kasus yang diatribusikan ke PM2.5.',
     },
   ];
 }
 
-function healthStationExcess(id) {
-  const r = (DATA.health.stations || []).find((s) => s.station === id);
-  if (!r) return null;
-  return { resp: r.resp, days: r.days, excess: r };
+function healthStationRow(id) {
+  return (DATA.health.stations || []).find((s) => s.station === id) || null;
 }
 function topRowsFull() {
   const map = new Map(DATA.stations.stations.map((s) => [s.id, s]));
@@ -1720,8 +2180,9 @@ const KPI_DEST = {
 function round1(v) { return Math.round(v * 10) / 10; }
 
 function healthYears() {
+  if (DATA.health.scopeYears) return DATA.health.scopeYears;
   if (state.island === 'Semua') return DATA.health.years;
-  return DATA.health.by_island[state.island] || DATA.health.years;
+  return (DATA.health.byIsland || {})[state.island] || DATA.health.years;
 }
 
 function healthLag() {
@@ -1731,8 +2192,7 @@ function healthLag() {
 
 function healthStations() {
   const rows = DATA.health.stations;
-  if (state.island === 'Semua') return rows;
-  return rows.filter((r) => r.island === state.island);
+  return rows.filter((r) => (state.island === 'Semua' || r.island === state.island) && (!state.station || r.station === state.station));
 }
 
 function defaultStationForIsland() {
@@ -1749,14 +2209,17 @@ function overviewPills() {
   const dq = DATA.meta.data_quality;
   const ratio = (DATA.overview.kpis || []).find((k) => k.id === 'national');
   const blind = (DATA.network.blind_spots || []).length;
-  return `<span class="pill static" data-tip="Rata-rata nasional 2026 dibanding 2024 · ${esc(DATA.meta.periods.window)}">${fmtRatio(ratio ? ratio.ratio : null)}× 2024</span>
-    <span class="pill static" data-tip="Baris valid ${fmtInt(dq.valid_rows)} dari ${fmtInt(dq.raw_rows)} baris mentah">${fmt(dq.valid_overall_pct, 1)}% data layak</span>
+  const ratioTip = state.range === 'semua'
+    ? 'Rentang Semua tidak dibandingkan dengan 2024'
+    : `Rata-rata ${DATA.view.label} dibanding rentang sama pada 2024`;
+  return `<span class="pill static" data-tip="${esc(ratioTip)}">${fmtRatio(ratio ? ratio.ratio : null)}× 2024</span>
+    <span class="pill static" data-tip="Baris lolos pemeriksaan ${fmtInt(dq.valid_rows)} dari ${fmtInt(dq.raw_rows)} baris mentah">${fmt(dq.valid_overall_pct, 1)}% data layak</span>
     <span class="pill warning" data-tip="${esc((DATA.network.blind_spots || []).join(' · '))}">${blind} wilayah tanpa stasiun</span>`;
 }
 
 function renderOverview() {
   const d = DATA.meta.data_quality;
-  const meta = `${DATA.meta.periods.window} · ${d.stations} stasiun · ${d.provinces} provinsi · data hingga ${DATA.meta.periods.data_end}`;
+  const meta = `${DATA.view.label} · ${d.stations} stasiun · ${d.provinces} provinsi · data hingga ${DATA.meta.periods.data_end}`;
   const kpis = overviewKpis().map(kpiCard2).join('');
   const islandCompTitle = state.station
     ? `Komposisi ISPU · ${state.station}`
@@ -1773,16 +2236,18 @@ function renderOverview() {
         <div class="card-head"><div class="card-title">Peta hotspot</div><div class="card-head-right">${provToggleHtml()}</div></div>
         <div class="card-body"><div class="map" id="map-overview"></div><div class="map-legend" id="legend-overview"></div></div>
       </section>
-      ${card(trendTitle, 'µg/m³ · bulanan · garis PP 55 & WHO 15', `<div class="chart" id="chart-trend"></div>`, { cls: 'h-420', right: `<div class="card-sub">P95 ${fmt(trend.p95, 1)} · Okt ${trend.partialDays} hari</div>` })}
+      ${card(trendTitle, 'µg/m³ · bulanan · garis PP 55 & WHO 15', `<div class="chart" id="chart-trend"></div>`, { cls: 'h-420', right: `<div class="card-sub">P95 ${fmt(trend.p95, 1)} · ${esc(DATA.view.label)}</div>` })}
     </div>
     <div class="grid-12">
-      ${card('Ranking pulau', 'µg/m³ · 1 Agu–14 Okt 2026', `<div class="chart" id="chart-rank-island"></div>`, { cls: 'span-3 h-320' })}
-      ${card('Siklus 24 jam', 'indeks % · 100 = rata-rata harian', `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320' })}
-      ${card('Kasus per kategori', `kasus · ${healthYears()[2].days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual / expected</div>' })}
+      ${card('Ranking pulau', `µg/m³ · ${DATA.view.label}`, `<div class="chart" id="chart-rank-island"></div>`, { cls: 'span-3 h-320' })}
+      ${state.range === 'hari'
+        ? card('24 jam · tanggal acuan', `µg/m³ · per jam · ${dayMonth(state.date)}`, `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', right: '<div class="card-sub">jam-jaman</div>' })
+        : card('Siklus 24 jam', 'indeks % · 100 = rata-rata harian', `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320' })}
+      ${card('Kunjungan per kategori', `kasus · ${healthYears()[2].days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual</div>' })}
     </div>
     <div class="grid-12">
       ${card(islandCompTitle, '% hari-stasiun', `<div class="chart" id="chart-ispu-island"></div>` + ispuStackLegend(), { cls: 'span-6 h-280' })}
-      ${card('Perbandingan 5 kelas lokasi', 'baseline vs mean 2026 · µg/m³', `<div class="chart" id="chart-class"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">klik untuk rincian</div>' })}
+      ${card('Perbandingan 5 kelas lokasi', 'baseline vs rata-rata · µg/m³', `<div class="chart" id="chart-class"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">klik untuk rincian</div>' })}
     </div>
   </div>`;
 }
@@ -1805,10 +2270,10 @@ function afterOverview() {
     id: s.id,
     lat: s.lat,
     lon: s.lon,
-    color: catColor(s.ispu_dominant),
-    r: s.mean_2026 == null ? 4.5 : 4 + Math.min(4, s.mean_2026 / 90),
+    color: catColor(s.day_category),
+    r: s.day_value == null ? 4.5 : 4 + Math.min(4, s.day_value / 90),
     selected: s.id === state.station,
-    mean: s.mean_2026,
+    mean: s.day_value,
     tip: stationTip(s),
   })), {
     onClick: (id) => {
@@ -1859,7 +2324,7 @@ function afterOverview() {
       }
     },
   });
-  makeCycleChart('chart-cycle');
+  if (state.range === 'hari') makeDayHourChart('chart-cycle'); else makeCycleChart('chart-cycle');
   makeObservedChart('chart-ov-health', { grid: { left: 92, right: 48, top: 24, bottom: 24 }, yFont: 9 });
   makeSiteClassChart('chart-class');
   const islands = DATA.overview.island26.slice().sort((a, b) => b.mean - a.mean).map((r) => ({ id: r.island, value: r.mean, cat: categoryFromPm(r.mean), days: r.days }));
@@ -1971,27 +2436,24 @@ function pmLegend() {
 
 /* ------------------------------------------------------------------ time */
 function timeKpis() {
-  const sub = state.station ? `${state.station} · 2024–2026` : (state.island === 'Semua' ? 'Nasional 2024–2026' : `${state.island} 2024–2026`);
-  const st = state.station ? DATA.stationsById.get(state.station) : null;
-  const hours = st ? (DATA.time.station_hour[state.station] || []) : (state.island !== 'Semua' && DATA.time.hour_dow_by_island[state.island] ? aggregateHours(DATA.time.hour_dow_by_island[state.island]) : (DATA.time.hour_dow_all ? aggregateHours(DATA.time.hour_dow_all) : []));
-  const peak = hours.length ? hours.slice().sort((a, b) => b.pm25 - a.pm25)[0] : null;
+  const sub = `${state.station || (state.island === 'Semua' ? 'Nasional' : state.island)} · ${DATA.view.label}`;
+  const hours = hourlySeries();
+  const peak = hours.length ? hours.filter((h) => h.pm25 != null).sort((a, b) => b.pm25 - a.pm25)[0] : null;
   const w26 = state.island === 'Semua' ? DATA.time.weekday.find((r) => r.year === 2026) : (DATA.time.weekday_island || []).find((r) => r.year === 2026 && r.island === state.island);
-  const diff = w26 ? w26.weekend - w26.weekday : null;
-  const episodeTotal = Object.values(DATA.time.episode_stats).reduce((a, r) => a + (r.episode || 0), 0);
-  const hazeEpisode = (DATA.time.episode_monthly_island || []).filter((r) => /-(09|10|11)$/.test(r.month)).reduce((a, r) => a + (r.episode || 0), 0);
+  const diff = w26 && w26.weekend != null && w26.weekday != null ? w26.weekend - w26.weekday : null;
+  const scope = scopeStats();
   let streak = 0; let streakStation = null;
-  const streakId = state.station || (DATA.stationsById.get(defaultStationForIsland() || 'KTG-02') ? (defaultStationForIsland() || 'KTG-02') : null);
+  const streakId = state.station || defaultStationForIsland();
   if (streakId && DATA.time.episode_stats[streakId]) { streak = DATA.time.episode_stats[streakId].longest || 0; streakStation = streakId; }
   else Object.entries(DATA.time.episode_stats).forEach(([id, r]) => {
     if (state.island !== 'Semua') { const s = DATA.stationsById.get(id); if (!s || s.island !== state.island) return; }
     if ((r.longest || 0) > streak) { streak = r.longest; streakStation = id; }
   });
-  const hazePct = episodeTotal ? hazeEpisode / episodeTotal * 100 : null;
   return [
-    { id: 'peak', label: `Jam terburuk${st ? ' · ' + st.id : ''}`, value: peak ? `${String(peak.hour).padStart(2, '0')}:00` : '—', unit: '', baseline: peak ? `${fmt(peak.pm25, 1)} µg/m³` : '', window: '2024–2026', note: sub },
-    { id: 'weekend', label: 'Selisih akhir pekan', value: diff == null ? '—' : (diff >= 0 ? '+' : '') + fmt(diff, 1), unit: 'µg/m³', baseline: w26 ? `libur ${fmt(w26.weekend, 1)} − kerja ${fmt(w26.weekday, 1)}` : '', window: '2026', note: 'mean akhir pekan − hari kerja, 1 Agu–14 Okt 2026' },
-    { id: 'haze', label: 'Episode di musim asap', value: hazePct == null ? '—' : fmt(hazePct, 0), unit: '%', baseline: `${fmtInt(hazeEpisode)}/${fmtInt(episodeTotal)} hari`, window: '2024–2026', note: 'hari-stasiun >55 µg/m³ di Sep–Nov' },
-    { id: 'streak', label: 'Rentetan episode terpanjang', value: streak ? fmtInt(streak) : '—', unit: 'hari', baseline: streakStation ? `${streakStation} · >55 µg/m³` : '', window: '2024–2026', note: 'hari berurutan >55 µg/m³' },
+    { id: 'peak', label: `Jam terburuk${state.station ? ' · ' + state.station : ''}`, value: peak ? `${String(peak.hour).padStart(2, '0')}:00` : '—', unit: '', baseline: peak ? `${fmt(peak.pm25, 1)} µg/m³` : '', window: DATA.view.name, note: sub },
+    { id: 'weekend', label: 'Selisih akhir pekan', value: diff == null ? '—' : (diff >= 0 ? '+' : '') + fmt(diff, 1), unit: diff == null ? '' : 'µg/m³', baseline: w26 && diff != null ? `libur ${fmt(w26.weekend, 1)} − kerja ${fmt(w26.weekday, 1)}` : 'tidak cukup hari', window: DATA.view.name, note: `akhir pekan − hari kerja · ${DATA.view.label}` },
+    { id: 'above55', label: 'Hari >55 µg/m³', value: scope.above55_pct, unit: '%', baseline: `${fmtInt(scope.above55_n)}/${fmtInt(scope.days)} hari-stasiun`, window: DATA.view.name, note: `porsi hari-stasiun di atas 55 · ${DATA.view.label}` },
+    { id: 'streak', label: 'Rentetan episode terpanjang', value: streak ? fmtInt(streak) : '—', unit: 'hari', baseline: streakStation ? `${streakStation} · >55 µg/m³` : '', window: '2024–2026', note: 'hari berurutan >55 µg/m³ · seluruh periode' },
   ];
 }
 function aggregateHours(rows) {
@@ -2004,29 +2466,29 @@ function aggregateHours(rows) {
 }
 function renderTime() {
   const d = DATA.meta.data_quality;
-  const meta = `2024–2026 · ${d.stations} stasiun · data hingga ${DATA.meta.periods.data_end}`;
-  const sub = state.station ? `${state.station} · 2024–2026` : (state.island === 'Semua' ? 'Nasional' : state.island);
+  const meta = `${DATA.view.label} · ${d.stations} stasiun · data hingga ${DATA.meta.periods.data_end}`;
+  const sub = state.station ? `${state.station} · ${DATA.view.label}` : (state.island === 'Semua' ? 'Nasional' : state.island);
   const kpis = timeKpis().map(kpiCard2).join('');
-  return `${pageHead('Waktu', meta, `<span class="pill">2024–2026</span>`)}
+  return `${pageHead('Waktu', meta, `<span class="pill">${esc(DATA.view.name)}</span>`)}
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="grid-12">
-      ${card('Harian', 'µg/m³', `<div class="chart" id="chart-daily"></div>`, { cls: 'span-12 h-460', right: '<div class="card-sub">µg/m³ · garis 15 / 55 / 100</div>' })}
+      ${card('Perubahan PM2.5 harian', 'µg/m³', `<div class="chart" id="chart-daily"></div>`, { cls: 'span-12 h-460', right: '<div class="card-sub">µg/m³ · garis 15 / 55 / 100</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Kalender harian', `PM2.5 · ${sub}`, `<div class="chart" id="chart-heat"></div>`, { cls: 'span-7 h-340', right: `<div class="heat-legend" id="legend-heat"></div><div class="card-sub">${sub}</div>` })}
-      ${card('Jam × hari', 'µg/m³', `<div class="chart" id="chart-hour-dow"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">µg/m³ · jam × DOW</div>' })}
+      ${card('Kalender harian', `PM2.5 · ${sub} · 2024–2026`, `<div class="chart" id="chart-heat"></div>`, { cls: 'span-7 h-340', right: `<div class="heat-legend" id="legend-heat"></div>` })}
+      ${card('Jam × hari', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-hour-dow"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">µg/m³ · jam × DOW</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Siklus 24 jam per kelas lokasi', '% rata-rata', `<div class="chart" id="chart-diurnal-class"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">indeks % · 100 = rata-rata</div>' })}
-      ${card('Bulanan per pulau', 'µg/m³', `<div class="chart" id="chart-month-island"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
+      ${card('Siklus 24 jam per kelas lokasi', '% rata-rata · 2024–2026', `<div class="chart" id="chart-diurnal-class"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">indeks % · 100 = rata-rata</div>' })}
+      ${card('Bulanan per pulau', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-month-island"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Episode per bulan', 'hari-stasiun >55', `<div class="chart" id="chart-episode-month"></div>`, { cls: 'span-7 h-280', right: '<div class="card-sub">hari-stasiun >55</div>' })}
-      ${card('Hari kerja vs akhir pekan', 'µg/m³', `<div class="chart" id="chart-weekday"></div>`, { cls: 'span-5 h-280', right: '<div class="card-sub">µg/m³ · per tahun</div>' })}
+      ${card('Episode per bulan', 'hari-stasiun >55 · 2024–2026', `<div class="chart" id="chart-episode-month"></div>`, { cls: 'span-7 h-280', right: '<div class="card-sub">hari-stasiun >55</div>' })}
+      ${card('Hari kerja vs akhir pekan', `µg/m³ · ${DATA.view.label}`, `<div class="chart" id="chart-weekday"></div>`, { cls: 'span-5 h-280', right: '<div class="card-sub">µg/m³ · per tahun</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Komposisi ISPU per tahun', '% hari-stasiun', `<div class="chart" id="chart-ispu-year"></div>` + ispuStackLegend(), { cls: 'span-12 h-280' })}
+      ${card('Komposisi ISPU per tahun', '% hari-stasiun · 2024–2026', `<div class="chart" id="chart-ispu-year"></div>` + ispuStackLegend(), { cls: 'span-12 h-280' })}
     </div>
   </div>`;
 }
@@ -2238,11 +2700,33 @@ function makeHeatmap() {
 
 function makeEpisodeChart() {
   const rows = state.station ? (DATA.time.station_daily[state.station] || []) : (state.island === 'Semua' ? DATA.time.daily : (DATA.time.daily_island[state.island] || []));
+  const [from, to] = rangeBounds();
+  const shiftDay = (iso, days) => {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+  const dayOnly = state.range === 'hari';
   const chart = makeChart('chart-daily', {
     aria: { enabled: true },
     grid: { left: 40, right: 16, top: 26, bottom: 28 },
-    tooltip: { ...tooltipBase(), trigger: 'axis', formatter: (ps) => `<b>${ps[0].axisValue}</b><br>${fmt(ps[0].value[1], 1)} µg/m³` },
-    xAxis: { type: 'time', axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 9 } },
+    tooltip: {
+      ...tooltipBase(),
+      trigger: 'axis',
+      formatter: (ps) => {
+        const ts = ps[0].value[0];
+        const iso = new Date(ts).toISOString().slice(0, 10);
+        return `<b>${esc(shortDate(iso))}</b><br>${fmt(ps[0].value[1], 1)} µg/m³`;
+      },
+    },
+    xAxis: {
+      type: 'time',
+      min: dayOnly ? shiftDay(from, -14) : undefined,
+      max: dayOnly ? shiftDay(to, 7) : undefined,
+      axisLine: { lineStyle: { color: C.line } },
+      axisTick: { show: false },
+      axisLabel: { color: C.muted, fontSize: 9 },
+    },
     yAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 9 } },
     series: [{
       type: 'line',
@@ -2251,11 +2735,17 @@ function makeEpisodeChart() {
       sampling: 'lttb',
       lineStyle: { width: 1.6, color: C.navy },
       areaStyle: { color: 'rgba(16,42,67,.06)' },
-      markLine: markLinePP(
-        ppItem('y', 55, 'PP 55', C.yellow),
-        { yAxis: 15, lineStyle: { type: [4, 3], width: 1, color: C.teal, opacity: .5 }, label: { show: false } },
-        { yAxis: 100, lineStyle: { type: [4, 3], width: 1, color: C.terra, opacity: .45 }, label: { show: false } },
-      ),
+      markLine: {
+        silent: true,
+        symbol: 'none',
+        label: { show: dayOnly, formatter: 'Tanggal acuan', color: C.terra, fontSize: 8.5 },
+        data: [
+          ...(dayOnly ? [{ xAxis: to, lineStyle: { type: 'dashed', width: 1.2, color: C.terra } }] : []),
+          ppItem('y', 55, 'PP 55', C.yellow),
+          { yAxis: 15, lineStyle: { type: [4, 3], width: 1, color: C.teal, opacity: .5 }, label: { show: false } },
+          { yAxis: 100, lineStyle: { type: [4, 3], width: 1, color: C.terra, opacity: .45 }, label: { show: false } },
+        ],
+      },
     }],
   });
   pickByPixel(chart, document.getElementById('chart-daily'), 'x', (ts) => {
@@ -2330,16 +2820,16 @@ function renderGeo() {
   const stId = valid ? state.station : defaultStationForIsland();
   if (stId) state.station = stId;
   const st = DATA.stationsById.get(stId) || null;
-  const meta = `${DATA.meta.periods.haze} · ${filteredStations().length} stasiun · ${DATA.meta.periods.data_end}`;
-  return `${pageHead('Stasiun', meta, `<span class="pill">1 Agu–14 Okt 2026</span>`)}
+  const meta = `${DATA.view.label} · ${filteredStations().length} stasiun · data hingga ${DATA.meta.periods.data_end}`;
+  return `${pageHead('Stasiun', meta, `<span class="pill">${esc(DATA.view.name)}</span>`)}
   <div class="page-body">
     <div class="grid-12">
       <section class="card span-7 h-420">
-        <div class="card-head"><div class="card-title">Peta stasiun</div><div class="card-head-right"><div class="card-sub">ISPU dominan</div></div></div>
+        <div class="card-head"><div class="card-title">Peta stasiun</div><div class="card-head-right"><div class="card-sub">ISPU · ${esc(shortDate(state.date))}</div></div></div>
         <div class="card-body"><div class="map" id="map-geo"></div><div class="map-legend" id="legend-geo"></div></div>
       </section>
       <section class="card span-5 h-420">
-        <div class="card-head"><div class="card-title">Profil stasiun</div><div class="card-head-right">${st ? `<button class="ghost-btn" type="button" data-action="compare-station">Bandingkan</button>` : ''}<div class="card-sub">${st ? 'klik titik lain' : 'pilih stasiun'}</div></div></div>
+        <div class="card-head"><div class="card-title">Profil stasiun</div><div class="card-head-right">${st ? `<button class="ghost-btn" type="button" data-action="export-station">CSV</button><button class="ghost-btn" type="button" data-action="compare-station">Bandingkan</button>` : ''}<div class="card-sub">${st ? 'klik titik lain' : 'pilih stasiun'}</div></div></div>
         <div class="card-body" id="profile-body">${renderProfile(st)}</div>
       </section>
     </div>
@@ -2347,8 +2837,8 @@ function renderGeo() {
       ${card('Tren bulanan stasiun', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-profile-trend"></div>`, { cls: 'span-12 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Kronis–akut', 'mean vs P95 harian · 1 Agu–14 Okt 2026', `<div class="chart" id="chart-chronic"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">X mean · Y P95</div>' })}
-      ${card('Ringkasan beban', 'µg/m³', `<div class="card-body" id="chronic-stats" style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:start"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">1 Agu–14 Okt 2026</div>' })}
+      ${card('Kronis–akut', `rata-rata vs P95 harian · ${DATA.view.label}`, `<div class="chart" id="chart-chronic"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">X rata-rata · Y P95</div>' })}
+      ${card('Ringkasan beban', 'µg/m³', `<div class="card-body" id="chronic-stats" style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:start"></div>`, { cls: 'span-5 h-320', right: `<div class="card-sub">${esc(DATA.view.label)}</div>` })}
     </div>
     ${renderGeoTable()}
   </div>`;
@@ -2383,7 +2873,15 @@ function geoTableRows() {
 function afterGeo() {
   const selectedId = state.station || defaultStationForIsland() || 'KTG-02';
   const rows = filteredStations();
-  const mapped = rows.map((s) => ({ id: s.id, lat: s.lat, lon: s.lon, color: catColor(s.ispu_dominant), r: s.mean_2026 == null ? 4.5 : 3.5 + Math.min(3.5, s.mean_2026 / 100), selected: s.id === selectedId, popup: `<b>${esc(s.id)}</b><br>${esc(s.ispu_dominant || '—')} · ${s.ispu_share == null ? '—' : fmt(s.ispu_share, 1) + '% hari'}<br>${fmt(s.mean_2026, 1)} µg/m³ · ${esc(s.status)}` }));
+  const mapped = rows.map((s) => ({
+    id: s.id,
+    lat: s.lat,
+    lon: s.lon,
+    color: catColor(s.day_category),
+    r: s.day_value == null ? 4.5 : 3.5 + Math.min(3.5, s.day_value / 100),
+    selected: s.id === selectedId,
+    popup: `<b>${esc(s.id)}</b><br>${esc(shortDate(state.date))} · ${s.day_value == null ? 'tanpa data' : fmt(s.day_value, 1) + ' µg/m³'}<br>rata-rata ${fmt(s.mean_2026, 1)} µg/m³ · ${esc(s.status)}`,
+  }));
   makeMap('map-geo', mapped, {
     onClick: (id) => { state.station = id; render(); },
     legend: ispuLegendFull(),
@@ -2427,8 +2925,8 @@ function makeChronicChart() {
     const kronis = valid.slice().sort((a, b) => a.mean_2026 - b.mean_2026)[0];
     const akut = valid.slice().sort((a, b) => b.p95_2026 - a.p95_2026)[0];
     stats.innerHTML = [
-      ['Mean terendah', kronis ? `${kronis.id} · ${fmt(kronis.mean_2026, 1)}` : '—', 'µg/m³'],
-      ['Mean tertinggi', topRowsFull()[0] ? `${topRowsFull()[0].id} · ${fmt(topRowsFull()[0].mean_2026, 1)}` : '—', 'µg/m³'],
+      ['Rata-rata terendah', kronis ? `${kronis.id} · ${fmt(kronis.mean_2026, 1)}` : '—', 'µg/m³'],
+      ['Rata-rata tertinggi', topRowsFull()[0] ? `${topRowsFull()[0].id} · ${fmt(topRowsFull()[0].mean_2026, 1)}` : '—', 'µg/m³'],
       ['P95 tertinggi', akut ? `${akut.id} · ${fmt(akut.p95_2026, 1)}` : '—', 'µg/m³'],
       ['Stasiun', valid.length ? `${valid.length}` : '—', 'stasiun'],
     ].map(([k, v, u]) => `<div class="metric"><div class="metric-label">${k}</div><div class="metric-value">${v} <small>${u}</small></div></div>`).join('');
@@ -2464,8 +2962,8 @@ function renderCompare(root = document) {
     <div class="spark-wrap"><div class="spark-label">Bulanan 2024–2026</div><div class="chart spark" id="compare-spark-${i}"></div></div>
     <div class="detail-list">
       <div class="row"><span>Tipe situs</span><b>${esc(s.site_class)}</b></div>
-      <div class="row"><span>Validitas</span><b>${fmt(s.valid_pct, 1)}%</b></div>
-      <div class="row"><span>Hari layak</span><b>${s.usable_days}/${s.total_days}</b></div>
+      <div class="row"><span>Data lolos pemeriksaan</span><b>${fmt(s.valid_pct, 1)}%</b></div>
+      <div class="row"><span>Hari layak · 2024–2026</span><b>${s.usable_days}/${s.total_days}</b></div>
       ${s.issues ? `<div class="row"><span>Catatan QC</span><b>${esc(s.issues)}</b></div>` : ''}
     </div>
   </div>`).join('');
@@ -2502,7 +3000,7 @@ function detailCompare() {
   return {
     key: 'compare',
     wide: true,
-    kicker: 'Perbandingan stasiun · 1 Agu–14 Okt 2026',
+    kicker: `Perbandingan stasiun · ${DATA.view.label}`,
     title: 'Bandingkan profil',
     chip: `${aId} vs ${bId}`,
     body: `<div class="compare-pick">
@@ -2529,15 +3027,50 @@ function detailCompare() {
   };
 }
 
+const POLL_META = [
+  ['pm10', 'PM10', 'µg/m³'],
+  ['so2', 'SO2', 'µg/m³'],
+  ['no2', 'NO2', 'µg/m³'],
+  ['o3', 'O3', 'µg/m³'],
+  ['co', 'CO', 'µg/m³'],
+  ['temp', 'Suhu', '°C'],
+  ['hum', 'Kelembapan', '%'],
+  ['wind', 'Angin', 'm/s'],
+];
+
+function pollutantAt(stationId, iso) {
+  const rows = (DATA.pollutants.stations || {})[stationId] || [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (rows[i][0] === iso) {
+      return Object.fromEntries(DATA.pollutants.keys.map((k, j) => [k, rows[i][j + 1]]));
+    }
+    if (rows[i][0] < iso) break;
+  }
+  return null;
+}
+
+function metricRow(k, v, u) {
+  return `<div class="metric"><div class="metric-label">${k}</div><div class="metric-value">${v} <small>${u}</small></div></div>`;
+}
+
 function renderProfile(st) {
   if (!st) {
     return `<div class="empty"><svg viewBox="0 0 24 24"><path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11Z"/><circle cx="12" cy="10" r="2.5"/></svg><div>Pilih stasiun</div></div>`;
   }
-  const rows = [
+  const today = pollutantAt(st.id, state.date);
+  const todayRows = [
+    ['PM2.5', st.day_value == null ? '—' : fmt(st.day_value, 1), 'µg/m³'],
+    ...POLL_META.map(([k, label, unit]) => [label, today && today[k] != null ? fmt(today[k], 1) : '—', unit]),
+  ];
+  const rangeStat = DATA.view.byStation[st.id] || {};
+  const rangeRows = [
     ['Rata-rata', fmt(st.mean_2026, 1), 'µg/m³'],
     ['P95', fmt(st.p95_2026, 1), 'µg/m³'],
     ['Maks', fmt(st.max_2026, 1), 'µg/m³'],
     ['Hari', fmtInt(st.days_2026), 'hari'],
+    ['Hari >55', fmtInt(rangeStat.above55_n || 0), 'hari'],
+  ];
+  const fixedRows = [
     ['Layak', fmt(st.usable_pct, 1), '%'],
     ['Baseline', fmt(st.baseline, 1), 'µg/m³'],
     ['Lalu lintas', fmtInt(st.traffic), '/jam'],
@@ -2567,17 +3100,20 @@ function renderProfile(st) {
   return `<div class="profile">
     <div class="profile-head">
       <div><div class="profile-name">${esc(st.id)}</div><div class="profile-sub">${esc(st.city)} · ${esc(st.province)}</div></div>
-      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">${catBadge(st.ispu_dominant, st.ispu_share)}${statusBadge(st.status)}${st.lower_bound ? '<span class="badge est">≥999 lower bound</span>' : ''}</div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">${catBadge(st.day_category)}${statusBadge(st.status)}${st.lower_bound ? '<span class="badge est">≥999 batas bawah</span>' : ''}</div>
     </div>
-    <div class="metric-grid">${rows.map(([k, v, u]) => `<div class="metric"><div class="metric-label">${k}</div><div class="metric-value">${v} <small>${u}</small></div></div>`).join('')}</div>
+    <div class="detail-label">Pada ${esc(shortDate(state.date))}</div>
+    <div class="metric-grid">${todayRows.map(([k, v, u]) => metricRow(k, v, u)).join('')}</div>
+    ${state.range === 'hari' ? '' : `<div class="detail-label">Rentang ${esc(DATA.view.label)}</div>
+    <div class="metric-grid">${rangeRows.map(([k, v, u]) => metricRow(k, v, u)).join('')}</div>`}
     ${sensorBlock}
     <div class="detail-list">
-      <div class="row"><span>Peringkat 2026</span><b>${rank}</b></div>
+      <div class="row"><span>Peringkat ${esc(DATA.view.name)}</span><b>${rank}</b></div>
       <div class="row"><span>Vs nasional</span><b>${vs == null ? '—' : fmt(vs, 1) + '×'}</b></div>
       <div class="row"><span>Tipe situs</span><b>${esc(st.site_class)}</b></div>
-      <div class="row"><span>Validitas</span><b>${fmt(st.valid_pct, 1)}%</b></div>
-      <div class="row"><span>Hari layak</span><b>${st.usable_days}/${st.total_days}</b></div>
-      ${st.issues ? `<div class="row"><span>Catatan QC</span><b>${esc(st.issues)}</b></div>` : ''}
+      <div class="row"><span>Data lolos pemeriksaan</span><b>${fmt(st.valid_pct, 1)}%</b></div>
+      <div class="row"><span>Hari layak · 2024–2026</span><b>${st.usable_days}/${st.total_days}</b></div>
+      ${st.issues ? `<div class="row"><span>Catatan</span><b>${esc(st.issues)}</b></div>` : ''}
     </div>
   </div>`;
 }
@@ -2606,12 +3142,12 @@ function usableLegend() {
 function exportStation() {
   const st = state.station ? DATA.stationsById.get(state.station) : null;
   if (!st) return;
-  downloadCSV(`napas_${st.id}.csv`, [['metric', 'value', 'unit'], ['mean_2026', st.mean_2026, 'µg/m³'], ['p95_2026', st.p95_2026, 'µg/m³'], ['max_2026', st.max_2026, 'µg/m³'], ['days_2026', st.days_2026, 'hari'], ['usable_pct', st.usable_pct, '%'], ['baseline', st.baseline, 'µg/m³'], ['traffic', st.traffic, '/jam'], ['distance', st.distance, 'm']]);
+  downloadCSV(`napas_${st.id}.csv`, [['metric', 'value', 'unit', 'rentang'], ['pm25_acuan', st.day_value, 'µg/m³', shortDate(state.date)], ['rata_rata', st.mean_2026, 'µg/m³', DATA.view.label], ['p95', st.p95_2026, 'µg/m³', DATA.view.label], ['maksimum', st.max_2026, 'µg/m³', DATA.view.label], ['hari', st.days_2026, 'hari', DATA.view.label], ['hari_layak_pct', st.usable_pct, '%', '2024–2026'], ['baseline', st.baseline, 'µg/m³', 'situs'], ['lalu_lintas', st.traffic, '/jam', 'situs'], ['jarak_jalan', st.distance, 'm', 'situs']]);
 }
 
 /* ------------------------------------------------------------------ sources */
 function sourceRows() {
-  const rows = state.sourceMode === 'all' ? DATA.sources.all : DATA.sources.only2026;
+  const rows = DATA.sources.all;
   if (state.island === 'Semua') return rows;
   return rows.filter((r) => {
     const st = DATA.stationsById.get(r.station);
@@ -2636,42 +3172,37 @@ function pearson(rows, key) {
 }
 
 function renderSource() {
-  const mode = state.sourceMode;
+  const mode = 'all';
   const rows = sourceRows();
   const corr = {
     baseline: pearson(rows, 'baseline'),
     distance: pearson(rows, 'distance'),
     traffic: pearson(rows, 'traffic'),
   };
-  const corrMeta = state.island === 'Semua' ? (mode === 'all' ? DATA.sources.corr.all : DATA.sources.corr.only2026) : null;
-  const corrDisplay = {
-    baseline: corrMeta ? { r: corrMeta.baseline, n: corrMeta.n } : corr.baseline,
-    distance: corrMeta ? { r: corrMeta.distance, n: corrMeta.n } : corr.distance,
-    traffic: corrMeta ? { r: corrMeta.traffic, n: corrMeta.n } : corr.traffic,
-  };
+  const corrDisplay = corr;
   const pmCorr = DATA.sources.pollutant_matrix ? DATA.sources.pollutant_matrix.matrix[0][1] : null;
   const windNeg = (DATA.sources.meteo_corr || []).filter((r) => r.wind != null && r.wind < 0).length;
   const kpis = [
-    { id: 'cb', label: 'r baseline', value: corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : '—', unit: '', baseline: corrDisplay.baseline ? `n=${corrDisplay.baseline.n}` : '', window: mode === 'all' ? '2024–2026' : '2026', note: 'Pearson baseline vs mean PM2.5; asosiasi, bukan kausal' },
-    { id: 'cd', label: 'r jarak jalan', value: corrDisplay.distance ? fmtR(corrDisplay.distance.r) : '—', unit: '', baseline: corrDisplay.distance ? `n=${corrDisplay.distance.n}` : '', window: 'm', note: 'Pearson jarak ke jalan vs mean PM2.5; semakin jauh → cenderung lebih rendah' },
-    { id: 'ct', label: 'r lalu lintas', value: corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : '—', unit: '', baseline: corrDisplay.traffic ? `n=${corrDisplay.traffic.n}` : '', window: '/jam', note: 'Pearson volume lalu lintas vs mean PM2.5' },
-    { id: 'pm', label: 'r PM2.5–PM10', value: pmCorr == null ? '—' : fmtR(pmCorr), unit: '', baseline: DATA.sources.pollutant_matrix ? `n=${fmtInt(DATA.sources.pollutant_matrix.n)} hari-stasiun` : '', window: 'pooled', note: 'Korelasi pooled hari-stasiun PM2.5 vs PM10' },
+    { id: 'cb', label: 'r baseline', value: corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : '—', unit: '', baseline: corrDisplay.baseline ? `n=${corrDisplay.baseline.n}` : '', window: DATA.view.name, note: `Pearson baseline vs rata-rata PM2.5 · ${DATA.view.label}` },
+    { id: 'cd', label: 'r jarak jalan', value: corrDisplay.distance ? fmtR(corrDisplay.distance.r) : '—', unit: '', baseline: corrDisplay.distance ? `n=${corrDisplay.distance.n}` : '', window: 'm', note: 'Pearson jarak ke jalan vs rata-rata PM2.5; semakin jauh → cenderung lebih rendah' },
+    { id: 'ct', label: 'r lalu lintas', value: corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : '—', unit: '', baseline: corrDisplay.traffic ? `n=${corrDisplay.traffic.n}` : '', window: '/jam', note: 'Pearson volume lalu lintas vs rata-rata PM2.5' },
+    { id: 'pm', label: 'r PM2.5–PM10', value: pmCorr == null ? '—' : fmtR(pmCorr), unit: '', baseline: DATA.sources.pollutant_matrix ? `n=${fmtInt(DATA.sources.pollutant_matrix.n)} hari-stasiun` : '', window: '2024–2026', note: 'Korelasi pooled hari-stasiun PM2.5 vs PM10 · seluruh periode' },
   ].map(kpiCard2).join('');
   const pollutants = DATA.sources.pollutants;
   const windStations = filteredSourceStations();
   const windOptions = windStations.map((s) => `<option ${s === (state.windStation || 'PLB-01') ? 'selected' : ''}>${s}</option>`).join('');
-  return `${pageHead('Sumber', `${mode === 'all' ? '2024–2026' : '2026'} · korelasi tingkat stasiun · asosiasi, bukan kausal`, `<span class="badge est" data-tip="Korelasi Pearson pada tingkat stasiun; bukan klaim kausal">Asosiasi, bukan kausal</span><div class="seg"><button type="button" data-source="all" class="${mode === 'all' ? 'active' : ''}">2024–2026</button><button type="button" data-source="only2026" class="${mode === 'only2026' ? 'active' : ''}">2026-only</button></div><button class="ghost-btn" type="button" data-action="download-source">Unduh CSV</button>`)}
+  return `${pageHead('Sumber', `${DATA.view.label} · korelasi tingkat stasiun · asosiasi, bukan kausal`, `<span class="badge est" data-tip="Korelasi Pearson pada tingkat stasiun; bukan klaim kausal">Asosiasi, bukan kausal</span><button class="ghost-btn" type="button" data-action="download-source">Unduh CSV</button>`)}
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="grid-12">
-      ${card('Baseline vs PM2.5', `X baseline µg/m³ · Y ${mode === 'all' ? '2024–2026' : '2026'} µg/m³`, `<div class="chart" id="scatter-baseline"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : ''}</div>` })}
-      ${card('Jarak jalan vs PM2.5', `X meter (log) · Y ${mode === 'all' ? '2024–2026' : '2026'} µg/m³`, `<div class="chart" id="scatter-distance"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.distance ? fmtR(corrDisplay.distance.r) : ''}</div>` })}
-      ${card('Lalu lintas vs PM2.5', `X kendaraan/jam · Y ${mode === 'all' ? '2024–2026' : '2026'} µg/m³`, `<div class="chart" id="scatter-traffic"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : ''}</div>` })}
+      ${card('Baseline vs PM2.5', `X baseline µg/m³ · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-baseline"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : ''}</div>` })}
+      ${card('Jarak jalan vs PM2.5', `X meter (log) · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-distance"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.distance ? fmtR(corrDisplay.distance.r) : ''}</div>` })}
+      ${card('Lalu lintas vs PM2.5', `X kendaraan/jam · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-traffic"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : ''}</div>` })}
     </div>
     <div class="grid-12">
-      ${card('Matriks korelasi polutan', 'Pearson · pooled hari-stasiun', `<div class="chart" id="chart-pollutant-matrix"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">PM2.5 · PM10 · SO2 · NO2 · O3 · CO</div>' })}
+      ${card('Matriks korelasi polutan', 'Pearson · pooled hari-stasiun · 2024–2026', `<div class="chart" id="chart-pollutant-matrix"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">PM2.5 · PM10 · SO2 · NO2 · O3 · CO</div>' })}
       <section class="card span-6 h-340">
-        <div class="card-head"><div class="card-title">Rata-rata polutan</div><div class="card-head-right"><div class="card-sub">1 Agu–14 Okt 2026</div></div></div>
+        <div class="card-head"><div class="card-title">Rata-rata polutan</div><div class="card-head-right"><div class="card-sub">${esc(DATA.view.label)}</div></div></div>
         <div class="card-body"><div class="stat-grid">${pollutants.map((r) => `<div class="stat-block"><div class="k">${esc(r.label)}</div><div class="v">${fmt(r.value, 1)} <small>${esc(r.unit)}</small></div><div class="n">n = ${fmtInt(r.n)}</div></div>`).join('')}</div></div>
       </section>
     </div>
@@ -2684,7 +3215,7 @@ function renderSource() {
     </div>
     <div class="grid-12">
       <section class="card span-12 h-auto">
-        <div class="card-head"><div class="card-title">Meteorologi</div><div class="card-head-right"><div class="card-sub">rata-rata · 1 Agu–14 Okt 2026</div></div></div>
+        <div class="card-head"><div class="card-title">Meteorologi</div><div class="card-head-right"><div class="card-sub">rata-rata · ${esc(DATA.view.label)}</div></div></div>
         <div class="card-body"><div class="stat-grid">${(DATA.sources.meteo || []).map((r) => `<div class="stat-block"><div class="k">${esc(r.label)}</div><div class="v">${fmt(r.value, 1)} <small>${esc(r.unit)}</small></div><div class="n">n = ${fmtInt(r.n)}</div></div>`).join('')}</div></div>
       </section>
     </div>
@@ -2696,9 +3227,8 @@ function filteredSourceStations() {
 }
 
 function afterSource() {
-  const mode = state.sourceMode;
   const rows = sourceRows();
-  const yName = mode === 'all' ? 'PM2.5 2024–2026 (µg/m³)' : 'PM2.5 2026 (µg/m³)';
+  const yName = `PM2.5 ${DATA.view.label} (µg/m³)`;
   makeScatter('scatter-baseline', rows, 'baseline', false, 'Baseline (µg/m³)', yName);
   makeScatter('scatter-distance', rows, 'distance', true, 'Jarak ke jalan (m, log)', yName);
   makeScatter('scatter-traffic', rows, 'traffic', false, 'Lalu lintas (kendaraan/jam)', yName);
@@ -2849,7 +3379,7 @@ function makeScatter(id, rows, xKey, logX, xName = xKey, yName = 'PM2.5 2026 (µ
 function renderHealth() {
   const y = healthYears()[2];
   const scope = state.island === 'Semua' ? 'nasional' : state.island;
-  const meta = `${DATA.health.window} · ${y.days} hari · ${scope} · baseline Jan–Jun tahun yang sama`;
+  const meta = `${DATA.view.label} · ${y.days} hari · ${scope} · kunjungan aktual`;
   const stations = healthStations();
   const totalResp = stations.reduce((a, r) => a + (r.resp_actual || 0), 0);
   const totalUnder5 = stations.reduce((a, r) => a + (r.resp_under5_actual || 0), 0);
@@ -2861,28 +3391,28 @@ function renderHealth() {
   const hospitalMeta = DATA.hospitals.meta;
   const stationPerHospital = new Set((DATA.hospitals.hospitals || []).map((h) => h.station)).size;
   const kpis = [
-    { id: 'total', label: 'Total kunjungan respirasi', value: totalResp, unit: 'kasus', baseline: `${y.days} hari · ${DATA.hospitals.meta.count} RS`, window: '1 Agu–14 Okt', note: `aktual ${scope} · 1 Agu–14 Okt 2026`,
-      tip: [['Definisi', 'Jumlah kunjungan respirasi tercatat'], ['Cakupan', `${y.days} hari · ${DATA.hospitals.meta.count} RS · ${DATA.hospitals.meta.beds_total.toLocaleString('id-ID')} tempat tidur`], ['Sifat', 'Beban layanan, bukan insidensi penduduk'], ['Pembanding', 'baseline Jan–Jun 2026']],
+    { id: 'total', label: 'Kunjungan respirasi', value: totalResp, unit: 'kasus', baseline: `${y.days} hari · ${DATA.hospitals.meta.count} RS`, window: DATA.view.name, note: `aktual ${scope} · ${DATA.view.label}`,
+      tip: [['Definisi', 'Jumlah kunjungan respirasi tercatat'], ['Cakupan', `${y.days} hari · ${DATA.hospitals.meta.count} RS · ${DATA.hospitals.meta.beds_total.toLocaleString('id-ID')} tempat tidur`], ['Rentang', DATA.view.label], ['Sifat', 'Beban layanan, bukan insidensi penduduk']],
       tipNote: 'Bukan kasus yang diatribusikan ke PM2.5.' },
-    { id: 'under5', label: 'Balita', value: under5Share, unit: '%', baseline: `${fmtInt(totalUnder5)} kunjungan`, window: 'share respirasi', note: 'share kunjungan respirasi balita dari total respirasi',
-      tip: [['Definisi', 'Kunjungan balita ÷ total kunjungan respirasi'], ['Hitung', `${fmtInt(totalUnder5)} dari ${fmtInt(totalResp)} kunjungan`], ['Cakupan', `${y.days} hari · ${scope}`], ['Sifat', 'Asosiatif']] },
-    { id: 'over60', label: 'Lansia', value: over60Share, unit: '%', baseline: `${fmtInt(totalOver60)} kunjungan`, window: 'share respirasi', note: 'share kunjungan respirasi lansia dari total respirasi',
-      tip: [['Definisi', 'Kunjungan usia 60+ ÷ total kunjungan respirasi'], ['Hitung', `${fmtInt(totalOver60)} dari ${fmtInt(totalResp)} kunjungan`], ['Cakupan', `${y.days} hari · ${scope}`], ['Sifat', 'Asosiatif']] },
+    { id: 'under5', label: 'Kunjungan respirasi · balita', value: under5Share, unit: '%', baseline: `${fmtInt(totalUnder5)} kunjungan`, window: 'porsi respirasi', note: `porsi kunjungan balita dari total respirasi · ${DATA.view.label}`,
+      tip: [['Definisi', 'Kunjungan balita ÷ total kunjungan respirasi'], ['Hitung', `${fmtInt(totalUnder5)} dari ${fmtInt(totalResp)} kunjungan`], ['Cakupan', `${y.days} hari · ${scope}`], ['Rentang', DATA.view.label]] },
+    { id: 'over60', label: 'Kunjungan respirasi · lansia', value: over60Share, unit: '%', baseline: `${fmtInt(totalOver60)} kunjungan`, window: 'porsi respirasi', note: `porsi kunjungan usia 60+ dari total respirasi · ${DATA.view.label}`,
+      tip: [['Definisi', 'Kunjungan usia 60+ ÷ total kunjungan respirasi'], ['Hitung', `${fmtInt(totalOver60)} dari ${fmtInt(totalResp)} kunjungan`], ['Cakupan', `${y.days} hari · ${scope}`], ['Rentang', DATA.view.label]] },
     { id: 'lag0', label: 'Asosiasi lag 0', value: lag0, unit: '', baseline: 'r anomali · hari sama', window: '2024–2026', note: 'Korelasi anomali PM2.5 dan kunjungan respirasi pada hari yang sama',
       tip: [['Definisi', 'Pearson anomali PM2.5 vs anomali kunjungan, hari sama'], ['Cakupan', '2024–2026 · minimal 30 hari tumpang tindih'], ['Rentang', '−1 sampai +1'], ['Sifat', 'Asosiatif, bukan kausal']] },
   ].map((k) => ({ ...k, value: k.id === 'lag0' ? fmtR(k.value) : k.id === 'total' ? fmtInt(k.value) : fmt(k.value, 1) })).map(kpiCard2).join('');
-  return `${pageHead('Kesehatan', meta, `<span class="badge est" data-tip="Estimasi asosiatif: aktual − expected. Expected = rata-rata harian Jan–Jun tahun yang sama × jumlah hari jendela.">Estimasi asosiatif</span><button class="ghost-btn" type="button" data-action="download-health">Unduh CSV</button>`)}
+  return `${pageHead('Kesehatan', meta, `<span class="badge est" data-tip="Kunjungan rumah sakit yang tercatat. Bukan estimasi kasus akibat PM2.5.">Kunjungan aktual</span><button class="ghost-btn" type="button" data-action="download-health">Unduh CSV</button>`)}
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="rs-strip">
       <span><b>${fmtInt(hospitalMeta.count)}</b> rumah sakit mitra</span>
       <span><b>${fmtInt(hospitalMeta.beds_total)}</b> tempat tidur</span>
       <span><b>${fmt(hospitalMeta.count / Math.max(1, stationPerHospital), 0)}</b> RS per stasiun</span>
-      <span class="rs-strip-note">${esc(hospitalMeta.window)} · ${hospitalMeta.days} hari</span>
+      <span class="rs-strip-note">${esc(DATA.view.label)} · ${y.days} hari</span>
     </div>
     <div class="grid-12">
-      ${card('Kasus per kategori', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual / expected</div>' })}
-      ${card('Kelebihan per tahun', 'kasus', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">2024–2026</div>' })}
+      ${card('Kunjungan per kategori', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual</div>' })}
+      ${card('Kunjungan per tahun', 'kasus · rentang sama', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">2024–2026</div>' })}
     </div>
     <div class="grid-12">
       <section class="card span-12 h-320">
@@ -2895,7 +3425,7 @@ function renderHealth() {
         <div class="card-head"><div class="card-title">Peta kasus rumah sakit</div><div class="card-head-right">${provToggleHtml()}</div></div>
         <div class="card-body"><div class="map" id="map-health"></div><div class="map-legend" id="legend-health"></div></div>
       </section>
-      ${card('Beban vs respons', 'X mean PM2.5 · Y r lag0', `<div class="chart" id="chart-health-scatter"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">µg/m³ · r</div>' })}
+      ${card('Kunjungan per 100 TT vs PM2.5', `X rata-rata PM2.5 · Y kunjungan/100 TT`, `<div class="chart" id="chart-health-scatter"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">µg/m³ · kasus</div>' })}
     </div>
     <div class="grid-12">
       ${card('Lag 0–14', 'r anomali', `<div class="chart" id="chart-lag"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">r · lag 0–14</div>' })}
@@ -2918,8 +3448,8 @@ function renderHealth() {
     </div>
     <div class="grid-12">
       <section class="card span-12 h-auto">
-        <div class="card-head"><div class="card-title">Estimasi kelebihan 7 outcome</div><div class="card-head-right"><div class="card-sub">${y.days} hari · 1 Agu–14 Okt 2026</div></div></div>
-        <div class="card-body"><div class="stat-grid">${DATA.health.outcomes.map((o) => `<div class="stat-block"><div class="k">${esc(o.label)}</div><div class="v">+${fmtInt(y.excess[o.key])} <small>kasus</small></div><div class="n">aktual ${fmtInt(y.actual[o.key])} · expected ${fmtInt(y.expected[o.key])}</div></div>`).join('')}</div></div>
+        <div class="card-head"><div class="card-title">Kunjungan 7 outcome</div><div class="card-head-right"><div class="card-sub">${y.days} hari · ${esc(DATA.view.label)}</div></div></div>
+        <div class="card-body"><div class="stat-grid">${DATA.health.outcomes.map((o) => `<div class="stat-block"><div class="k">${esc(o.label)}</div><div class="v">${fmtInt(y.actual[o.key])} <small>kasus</small></div><div class="n">${y.days} hari · aktual</div></div>`).join('')}</div></div>
       </section>
     </div>
   </div>`;
@@ -2941,27 +3471,23 @@ function makeObservedChart(id = 'chart-health', opts = {}) {
   if (!el) return null;
   const y = healthYears()[2];
   const outcomes = DATA.health.outcomes;
-  const actual = outcomes.map((o) => y.actual[o.key]);
-  const expected = outcomes.map((o) => y.expected[o.key]);
-  const excess = outcomes.map((o) => y.excess[o.key]);
+  const actual = outcomes.map((o) => y.actual[o.key] || 0);
   const chart = makeChart(id, {
     aria: { enabled: true },
-    grid: opts.grid || { left: 104, right: 64, top: 26, bottom: 20 },
-    legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 6, textStyle: { fontSize: 9, color: C.muted } },
+    grid: opts.grid || { left: 104, right: 64, top: 14, bottom: 20 },
     tooltip: {
       ...tooltipBase(),
       trigger: 'axis',
       axisPointer: { type: 'shadow' },
       formatter: (ps) => {
         const i = ps[0].dataIndex;
-        return `<b>${outcomes[i].label}</b><br>aktual ${fmtInt(actual[i])}<br>expected ${fmtInt(expected[i])}<br>+${fmtInt(excess[i])}`;
+        return `<b>${outcomes[i].label}</b><br>${fmtInt(actual[i])} kunjungan<br><span style="opacity:.7">${esc(DATA.view.label)}</span>`;
       },
     },
     xAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8.5, formatter: (v) => fmtInt(v) } },
     yAxis: { type: 'category', inverse: true, data: outcomes.map((o) => o.label), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: opts.yFont || 9.5, interval: 0 } },
     series: [
-      { name: 'Aktual', type: 'bar', data: actual, barWidth: 9, itemStyle: { color: C.navy, borderRadius: [0, 3, 3, 0] }, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => `+${fmtInt(excess[p.dataIndex])}` } },
-      { name: 'Expected', type: 'bar', data: expected, barWidth: 9, itemStyle: { color: C.grey2, borderRadius: [0, 3, 3, 0] } },
+      { name: 'Kunjungan', type: 'bar', data: actual, barWidth: 11, itemStyle: { color: C.navy, borderRadius: [0, 3, 3, 0] }, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => fmtInt(p.value) } },
     ],
   });
   if (!chart) return null;
@@ -2977,14 +3503,14 @@ function makeHealthYearChart() {
   const years = healthYears();
   const chart = makeChart('chart-health-year', {
     aria: { enabled: true },
-    grid: { left: 42, right: 12, top: 28, bottom: 26 },
+    grid: { left: 46, right: 12, top: 28, bottom: 26 },
     legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 6, textStyle: { fontSize: 9, color: C.muted } },
     tooltip: { ...tooltipBase(), trigger: 'axis' },
     xAxis: { type: 'category', data: years.map((r) => String(r.year)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 9 } },
     yAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8.5, formatter: (v) => fmtInt(v) } },
     series: [
-      { name: 'Respirasi', type: 'bar', data: years.map((r) => r.excess.resp), barWidth: 22, itemStyle: { color: C.navy, borderRadius: [3, 3, 0, 0] } },
-      { name: 'Kematian', type: 'bar', data: years.map((r) => r.excess.death), barWidth: 22, itemStyle: { color: C.terra, borderRadius: [3, 3, 0, 0] } },
+      { name: 'Respirasi', type: 'bar', data: years.map((r) => r.actual.resp || 0), barWidth: 22, itemStyle: { color: C.navy, borderRadius: [3, 3, 0, 0] } },
+      { name: 'Kematian', type: 'bar', data: years.map((r) => r.actual.death || 0), barWidth: 22, itemStyle: { color: C.terra, borderRadius: [3, 3, 0, 0] } },
     ],
   });
   pickByPixel(chart, document.getElementById('chart-health-year'), 'x', (i) => {
@@ -3082,12 +3608,12 @@ function makeLagMultiChart() {
   if (!el) return;
   if (state.healthTable === 'rs') {
     const rows = hospitalRows().slice().sort((a, b) => (b.per100beds || 0) - (a.per100beds || 0)).slice(0, 10);
-    el.innerHTML = `<thead><tr><th>Rumah sakit</th><th>Kota</th><th>Kelas</th><th class="num">Tempat tidur</th><th class="num">Kasus</th><th class="num">Kasus per 100 tempat tidur</th><th class="num">Kelebihan</th></tr></thead><tbody>${rows.map((h) => `<tr data-hospital-row="${esc(h.id)}" tabindex="0"><td>${esc(h.name)}</td><td>${esc(h.city)}</td><td>${esc(h.kelas)}</td><td class="num">${fmtInt(h.beds)}</td><td class="num">${fmtInt(h.actual.resp)}</td><td class="num">${fmt(h.per100beds, 0)}</td><td class="num">${fmtInt(h.excess.resp)}</td></tr>`).join('')}</tbody>`;
+    el.innerHTML = `<thead><tr><th>Rumah sakit</th><th>Kota</th><th>Kelas</th><th class="num">Tempat tidur</th><th class="num">Kunjungan</th><th class="num">Kunjungan per 100 tempat tidur</th></tr></thead><tbody>${rows.map((h) => `<tr data-hospital-row="${esc(h.id)}" tabindex="0"><td>${esc(h.name)}</td><td>${esc(h.city)}</td><td>${esc(h.kelas)}</td><td class="num">${fmtInt(h.beds)}</td><td class="num">${fmtInt(h.actual.resp)}</td><td class="num">${fmt(h.per100beds, 0)}</td></tr>`).join('')}</tbody>`;
     bindRowActivate('#health-top-table tbody tr', 'data-hospital-row', detailHospital);
     return;
   }
   const rows = healthStations().slice().sort((a, b) => (b.lag0_resp || 0) - (a.lag0_resp || 0)).slice(0, 10);
-  el.innerHTML = `<thead><tr><th>Stasiun</th><th>Pulau</th><th class="num">Actual</th><th class="num">Excess</th><th class="num">r lag 0</th><th class="num">Hari episode</th><th>Status</th></tr></thead><tbody>${rows.map((r) => `<tr data-health-station="${esc(r.station)}" tabindex="0"><td class="mono">${esc(r.station)}</td><td>${esc(r.island)}</td><td class="num">${fmtInt(r.resp_actual)}</td><td class="num">${fmtInt(r.resp)}</td><td class="num">${r.lag0_resp == null ? '—' : fmtR(r.lag0_resp)}</td><td class="num">${fmtInt(r.episode_days)}</td><td><span class="st ${statusSlug(r.status)}">${esc(r.status)}</span></td></tr>`).join('')}</tbody>`;
+  el.innerHTML = `<thead><tr><th>Stasiun</th><th>Pulau</th><th class="num">Kunjungan</th><th class="num">Balita</th><th class="num">r lag 0</th><th class="num">Hari episode</th><th>Status</th></tr></thead><tbody>${rows.map((r) => `<tr data-health-station="${esc(r.station)}" tabindex="0"><td class="mono">${esc(r.station)}</td><td>${esc(r.island)}</td><td class="num">${fmtInt(r.resp_actual)}</td><td class="num">${fmtInt(r.resp_under5_actual)}</td><td class="num">${r.lag0_resp == null ? '—' : fmtR(r.lag0_resp)}</td><td class="num">${fmtInt(r.episode_days)}</td><td><span class="st ${statusSlug(r.status)}">${esc(r.status)}</span></td></tr>`).join('')}</tbody>`;
   bindRowActivate('#health-top-table tbody tr', 'data-health-station', detailHealthStation);
 }
 
@@ -3113,24 +3639,40 @@ function makeHealthCaseMap() {
     choropleth: { onProvince: (name) => { const spec = detailProvince(name); if (spec) openDetail(spec); } },
   });
 }
+function stationBeds() {
+  const m = new Map();
+  (DATA.hospitals.hospitals || []).forEach((h) => {
+    const cur = m.get(h.station) || { beds: 0, resp: 0 };
+    cur.beds += h.beds || 0;
+    cur.resp += (h.actual && h.actual.resp) || 0;
+    m.set(h.station, cur);
+  });
+  return m;
+}
+
 function makeHealthScatter() {
   const st = DATA.stationsById;
-  const rows = healthStations().map((r) => ({
-    station: r.station, island: r.island, pm: st.get(r.station) ? st.get(r.station).mean_2026 : null, lag0: r.lag0_resp, episode: r.episode_days, actual: r.resp_actual, excess: r.resp,
-  })).filter((r) => r.pm != null && r.lag0 != null);
-  const pts = rows.map((r) => [r.pm, r.lag0, r.episode, r.station, r.island, r.actual, r.excess]);
+  const beds = stationBeds();
+  const rows = healthStations().map((r) => {
+    const b = beds.get(r.station);
+    return {
+      station: r.station, island: r.island, pm: st.get(r.station) ? st.get(r.station).mean_2026 : null,
+      per100: b && b.beds ? b.resp / b.beds * 100 : null, episode: r.episode_days, actual: r.resp_actual,
+    };
+  }).filter((r) => r.pm != null && r.per100 != null);
+  const pts = rows.map((r) => [r.pm, r.per100, r.episode, r.station, r.island, r.actual]);
   const chart = makeChart('chart-health-scatter', {
     aria: { enabled: true },
     grid: { left: 46, right: 16, top: 30, bottom: 34 },
-    tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.value[3])}</b><br>PM2.5 ${fmt(p.value[0], 1)} µg/m³<br>r lag 0 ${fmtR(p.value[1])}<br>episode ${fmtInt(p.value[2])} hari · ${esc(p.value[4])}` },
-    xAxis: { type: 'value', name: 'mean PM2.5 (µg/m³)', nameLocation: 'middle', nameGap: 20, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
-    yAxis: { type: 'value', name: 'r lag 0', nameGap: 16, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8, formatter: (v) => fmt(v, 2) } },
+    tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.value[3])}</b><br>PM2.5 ${fmt(p.value[0], 1)} µg/m³<br>${fmt(p.value[1], 0)} kunjungan/100 TT<br>${fmtInt(p.value[5])} kunjungan · ${esc(p.value[4])}` },
+    xAxis: { type: 'value', name: 'rata-rata PM2.5 (µg/m³)', nameLocation: 'middle', nameGap: 20, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
+    yAxis: { type: 'value', name: 'kunjungan/100 TT', nameGap: 16, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8, formatter: (v) => fmt(v, 0) } },
     series: [{
       type: 'scatter', data: pts, symbolSize: (v) => 5 + Math.min(9, Math.sqrt(v[2] || 1) / 3.5),
       itemStyle: { color: (p) => ISLAND_COLORS[p.value[4]] || C.navy, borderColor: C.paper, borderWidth: 1 },
-      label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, distance: 4, formatter: (p) => (p.value[1] > 0.45 || p.value[0] > 250 ? p.value[3] : '') },
+      label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, distance: 4, formatter: (p) => (p.value[1] > 80 || p.value[0] > 250 ? p.value[3] : '') },
       labelLayout: { hideOverlap: true },
-      markLine: markLinePP(ppItem('x', 55, 'PP 55', C.yellow), { yAxis: 0.35, lineStyle: { type: [4, 3], width: 1, color: C.muted, opacity: .5 }, label: { show: false } }),
+      markLine: markLinePP(ppItem('x', 55, 'PP 55', C.yellow)),
     }],
   });
   chart.on('click', (p) => {
@@ -3147,7 +3689,7 @@ function renderHealthPanel() {
   const tab = state.tab.kesehatan || 'lag';
   if (tab === 'beban') {
     el.innerHTML = `<div class="chart" id="health-panel-chart"></div>`;
-    const rows = healthStations().slice(0, 10).map((r) => ({ id: r.station, value: r.resp, status: r.status })).reverse();
+    const rows = healthStations().slice(0, 10).map((r) => ({ id: r.station, value: r.resp_actual, status: r.status })).reverse();
     if (!rows.length) {
       el.innerHTML = `<div class="empty">Tidak ada stasiun pada filter ini</div>`;
       return;
@@ -3166,8 +3708,8 @@ function renderHealthPanel() {
       xAxis: { type: 'category', data: years.map((r) => String(r.year)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 9 } },
       yAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8.5, formatter: (v) => fmtInt(v) } },
       series: [
-        { name: 'Respirasi', type: 'bar', data: years.map((r) => r.excess.resp), barWidth: 26, itemStyle: { color: C.navy, borderRadius: [3, 3, 0, 0] } },
-        { name: 'Kematian', type: 'bar', data: years.map((r) => r.excess.death), barWidth: 26, itemStyle: { color: C.terra, borderRadius: [3, 3, 0, 0] } },
+        { name: 'Respirasi', type: 'bar', data: years.map((r) => r.actual.resp || 0), barWidth: 26, itemStyle: { color: C.navy, borderRadius: [3, 3, 0, 0] } },
+        { name: 'Kematian', type: 'bar', data: years.map((r) => r.actual.death || 0), barWidth: 26, itemStyle: { color: C.terra, borderRadius: [3, 3, 0, 0] } },
       ],
     });
     return;
@@ -3206,13 +3748,13 @@ function renderNetwork() {
   const usablePct = d.usable_station_days / d.daily_station_days * 100;
   const kpis = [
     { id: 'rows', label: 'Baris pengamatan', value: fmtInt(d.raw_rows), unit: 'baris', baseline: '27 berkas AQMS', window: '2024–2026', note: 'Baris mentah 27 berkas AQMS' },
-    { id: 'valid', label: 'Baris VALID', value: fmt(validPct, 1), unit: '%', baseline: `${fmtInt(d.valid_rows)} baris`, window: 'QC', note: 'Baris lolos QC utama' },
-    { id: 'usable', label: 'Hari-stasiun layak', value: fmt(usablePct, 1), unit: '%', baseline: `${fmtInt(d.usable_station_days)}/${fmtInt(d.daily_station_days)}`, window: '≥18 jam', note: 'Hari dengan minimal 18 jam VALID' },
-    { id: 'fragile', label: 'Stasiun paling rapuh', value: worst ? worst.station : '—', unit: '', baseline: worst ? `${fmt(worst.usable_pct, 1)}% layak` : '', window: 'status', note: worst ? `${worst.station} · ${worst.status} · ${fmt(worst.usable_pct, 1)}% hari layak` : '' },
+    { id: 'valid', label: 'Baris lolos pemeriksaan', value: fmt(validPct, 1), unit: '%', baseline: `${fmtInt(d.valid_rows)} baris`, window: 'pemeriksaan', note: 'Porsi baris yang lolos pemeriksaan kualitas data' },
+    { id: 'usable', label: 'Hari-stasiun layak', value: fmt(usablePct, 1), unit: '%', baseline: `${fmtInt(d.usable_station_days)}/${fmtInt(d.daily_station_days)}`, window: '≥18 jam', note: 'Hari dengan minimal 18 jam data yang lolos pemeriksaan' },
+    { id: 'fragile', label: 'Stasiun paling rapuh', value: worst ? worst.station : '—', unit: '', baseline: worst ? `${fmt(worst.usable_pct, 1)}% layak` : '', window: '2024–2026', note: worst ? `${worst.station} · ${worst.status} · ${fmt(worst.usable_pct, 1)}% hari layak` : '' },
   ].map(kpiCard2).join('');
   const qc = DATA.network.qc_totals || {};
   const qcTotal = Object.values(qc).reduce((a, v) => a + v, 0) || 1;
-  const qcLegend = Object.entries(qc).map(([k, v]) => `<span class="item"><span class="sw" style="background:${({ VALID: C.teal, SUSPECT: '#E3A008', MISSING: '#A8B0C2', NONAKTIF: '#7B6BB0', ERROR: C.red })[k] || C.grey}"></span>${k} ${fmt(v / qcTotal * 100, 1)}%</span>`).join('');
+  const qcLegend = Object.entries(qc).map(([k, v]) => `<span class="item"><span class="sw" style="background:${QC_COLOR[k] || C.grey}"></span>${qcLabel(k)} ${fmt(v / qcTotal * 100, 1)}%</span>`).join('');
   const exclusions = DATA.network.exclusions || {};
   return `${pageHead('Jaringan', meta, `<span class="pill warning" data-tip="${esc(DATA.network.blind_spots.join(' · '))}">${DATA.network.blind_spots.length} wilayah tanpa stasiun</span><button class="ghost-btn" type="button" data-action="download-network">Unduh CSV</button>`)}
   <div class="page-body">
@@ -3223,7 +3765,7 @@ function renderNetwork() {
         <div class="card-head"><div class="card-title">Peta status</div><div class="card-head-right"><div class="card-sub">status stasiun</div></div></div>
         <div class="card-body"><div class="map" id="map-network"></div><div class="map-legend" id="legend-network"></div></div>
       </section>
-      ${card('Komposisi QC', 'proporsi baris', `<div class="chart" id="chart-qc"></div>` + `<div class="stack-legend">${qcLegend}</div>`, { cls: 'span-6 h-320', right: '<div class="card-sub">667.981 baris</div>' })}
+      ${card('Hasil pemeriksaan data', 'proporsi baris', `<div class="chart" id="chart-qc"></div>` + `<div class="stack-legend">${qcLegend}</div>`, { cls: 'span-6 h-320', right: '<div class="card-sub">667.981 baris</div>' })}
     </div>
     <div class="grid-12">
       <section class="card span-6 h-240">
@@ -3239,7 +3781,7 @@ function renderNetwork() {
       ${card('Matriks kelengkapan stasiun × bulan', '% hari layak', `<div class="chart" id="chart-completeness-matrix"></div>`, { cls: 'span-12 h-420', right: '<div class="card-sub">hari layak / hari kalender</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Prioritas pemantauan', 'X gap data · Y mean 2026', `<div class="chart" id="chart-priority"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">mean vs gap</div>' })}
+      ${card('Prioritas pemantauan', 'X gap data · Y rata-rata', `<div class="chart" id="chart-priority"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">mean vs gap</div>' })}
       ${card('Titik perhatian', 'gap >20% atau status buruk', `<div class="table-wrap" style="height:auto;max-height:320px"><table class="data" id="network-attention"></table></div>`, { cls: 'span-5 h-auto', right: '<div class="card-sub">perhatian</div>' })}
     </div>
     <section class="card span-12 h-auto">
@@ -3264,7 +3806,7 @@ function afterNetwork() {
 }
 function makeQcChart() {
   const qc = DATA.network.qc_totals || {};
-  const rows = Object.entries(qc).map(([name, value]) => ({ name, value }));
+  const rows = Object.entries(qc).map(([key, value]) => ({ key, name: qcLabel(key), value }));
   const total = rows.reduce((a, r) => a + r.value, 0) || 1;
   const chart = makeChart('chart-qc', {
     aria: { enabled: true },
@@ -3272,12 +3814,12 @@ function makeQcChart() {
     tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.name)}</b><br>${fmtInt(p.value)} baris · ${fmt(p.value / total * 100, 1)}%` },
     xAxis: { type: 'value', max: 100, axisLabel: { color: C.muted, fontSize: 8.5, formatter: '{value}%' }, splitLine: { lineStyle: { color: C.grid } } },
     yAxis: { type: 'category', inverse: true, data: rows.map((r) => r.name), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: 9 } },
-    series: [{ type: 'bar', data: rows.map((r) => ({ value: r.value / total * 100, itemStyle: { color: ({ VALID: C.teal, SUSPECT: '#E3A008', MISSING: '#A8B0C2', NONAKTIF: '#7B6BB0', ERROR: C.red })[r.name] || C.grey, borderRadius: [0, 4, 4, 0] } })), barWidth: 14, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => fmt(p.value, 1) + '%' } }],
+    series: [{ type: 'bar', data: rows.map((r) => ({ value: r.value / total * 100, itemStyle: { color: QC_COLOR[r.key] || C.grey, borderRadius: [0, 4, 4, 0] } })), barWidth: 14, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => fmt(p.value, 1) + '%' } }],
   });
   chart.on('click', (p) => {
     const r = rows[p.dataIndex];
     if (!r) return;
-    const spec = detailQc(r.name);
+    const spec = detailQc(r.key);
     if (spec) openDetail(spec);
   });
   return chart;
@@ -3312,12 +3854,12 @@ function renderNetworkTables() {
   const attention = $('#network-attention');
   if (attention) {
     const att = rows.filter((r) => r.gap > 20 || r.status !== 'Baik').sort((a, b) => b.gap - a.gap);
-    attention.innerHTML = `<thead><tr><th>Stasiun</th><th class="num">Gap</th><th class="num">Mean 2026</th><th>Status</th></tr></thead><tbody>${att.map((r) => `<tr data-net-station="${esc(r.station)}" tabindex="0"><td class="mono">${esc(r.station)}</td><td class="num">${fmt(r.gap, 1)}%</td><td class="num">${fmt(r.mean_2026, 1)}</td><td><span class="st ${statusSlug(r.status)}">${esc(r.status)}</span></td></tr>`).join('')}</tbody>`;
+    attention.innerHTML = `<thead><tr><th>Stasiun</th><th class="num">Gap</th><th class="num">Rata-rata</th><th>Status</th></tr></thead><tbody>${att.map((r) => `<tr data-net-station="${esc(r.station)}" tabindex="0"><td class="mono">${esc(r.station)}</td><td class="num">${fmt(r.gap, 1)}%</td><td class="num">${fmt(r.mean_2026, 1)}</td><td><span class="st ${statusSlug(r.status)}">${esc(r.status)}</span></td></tr>`).join('')}</tbody>`;
   }
   const table = $('#network-table');
   if (table) {
     const sorted = rows.slice().sort((a, b) => a.usable_pct - b.usable_pct);
-    table.innerHTML = `<thead><tr><th>Stasiun</th><th>Kota/Pulau</th><th class="num">Valid</th><th class="num">Layak</th><th class="num">Gap</th><th class="num">Mean 2026</th><th class="num">Hari</th><th>Status</th></tr></thead><tbody>${sorted.map((r) => { const st = DATA.stationsById.get(r.station); const valid = DATA.network.valid_pct_by_station[r.station]; return `<tr data-net-station="${esc(r.station)}" tabindex="0"><td class="mono">${esc(r.station)}</td><td>${esc(st ? st.city : '')} · ${esc(r.island)}</td><td class="num">${valid == null ? '—' : fmt(valid, 1)}%</td><td class="num">${fmt(r.usable_pct, 1)}%</td><td class="num">${fmt(r.gap, 1)}%</td><td class="num">${fmt(r.mean_2026, 1)}</td><td class="num">${fmtInt(r.days_2026)}</td><td><span class="st ${statusSlug(r.status)}">${esc(r.status)}</span></td></tr>`; }).join('')}</tbody>`;
+    table.innerHTML = `<thead><tr><th>Stasiun</th><th>Kota/Pulau</th><th class="num">Lolos</th><th class="num">Layak</th><th class="num">Gap</th><th class="num">Rata-rata</th><th class="num">Hari data</th><th>Status</th></tr></thead><tbody>${sorted.map((r) => { const st = DATA.stationsById.get(r.station); const valid = DATA.network.valid_pct_by_station[r.station]; return `<tr data-net-station="${esc(r.station)}" tabindex="0"><td class="mono">${esc(r.station)}</td><td>${esc(st ? st.city : '')} · ${esc(r.island)}</td><td class="num">${valid == null ? '—' : fmt(valid, 1)}%</td><td class="num">${fmt(r.usable_pct, 1)}%</td><td class="num">${fmt(r.gap, 1)}%</td><td class="num">${fmt(r.mean_2026, 1)}</td><td class="num">${fmtInt(r.days_2026)}</td><td><span class="st ${statusSlug(r.status)}">${esc(r.status)}</span></td></tr>`; }).join('')}</tbody>`;
   }
   bindRowActivate('[data-net-station]', 'data-net-station', detailNetworkStation);
 }
@@ -3369,7 +3911,7 @@ function renderMethod() {
           <table><thead><tr><th>Item</th><th class="num">Nilai</th></tr></thead><tbody>
             <tr><td>Baris mentah</td><td class="num">${fmtInt(d.raw_rows)}</td></tr>
             <tr><td>Baris hourly</td><td class="num">${fmtInt(d.hourly_rows)}</td></tr>
-            <tr><td>Baris VALID</td><td class="num">${fmtInt(d.valid_rows)}</td></tr>
+            <tr><td>Baris lolos pemeriksaan</td><td class="num">${fmtInt(d.valid_rows)}</td></tr>
             <tr><td>Hari-stasiun</td><td class="num">${fmtInt(d.daily_station_days)}</td></tr>
             <tr><td>Hari-stasiun layak</td><td class="num">${fmtInt(d.usable_station_days)}</td></tr>
             <tr><td>Stasiun / RS / provinsi</td><td class="num">${d.stations} / ${d.hospitals} / ${d.provinces}</td></tr>
@@ -3409,11 +3951,13 @@ function afterMethod() {
 /* ------------------------------------------------------------------ charts */
 function tooltipBase() {
   return {
+    appendToBody: true,
+    confine: false,
     backgroundColor: 'rgba(19,26,56,.92)',
     borderWidth: 0,
     padding: [9, 11],
     textStyle: { color: '#FFFFFF', fontFamily: 'Plus Jakarta Sans', fontSize: 10.5 },
-    extraCssText: 'border-radius:12px;box-shadow:0 18px 40px -18px rgba(19,26,56,.75);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)',
+    extraCssText: 'border-radius:12px;box-shadow:0 18px 40px -18px rgba(19,26,56,.75);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:9999',
   };
 }
 
@@ -3644,6 +4188,48 @@ function cycleSeries() {
   return { hours, nat, natVals: pick(nat), road: pick(byClass['Traffic/Roadside']), peat: pick(byClass['Peatland/Forest']) };
 }
 
+function makeDayHourChart(id) {
+  const rows = hourlySeries();
+  const vals = rows.map((r) => (r.pm25 == null ? null : r.pm25));
+  if (!vals.some((v) => v != null)) return null;
+  const ok = vals.filter((v) => v != null);
+  const hi = Math.max(...ok, 60);
+  const yMax = Math.ceil((hi + 10) / 20) * 20;
+  const peakIdx = vals.reduce((best, v, i) => (v != null && (best < 0 || v > vals[best]) ? i : best), -1);
+  const labels = rows.map((r) => String(r.hour).padStart(2, '0'));
+  const chart = makeChart(id, {
+    aria: { enabled: true },
+    grid: { left: 44, right: 16, top: 16, bottom: 22 },
+    tooltip: {
+      ...tooltipBase(),
+      trigger: 'axis',
+      formatter: (ps) => {
+        const h = ps[0].dataIndex;
+        return `<b>${labels[h]}:00</b><br>${vals[h] == null ? 'tidak ada data' : fmt(vals[h], 1) + ' µg/m³'}<br><span style="opacity:.7">${esc(shortDate(state.date))}</span>`;
+      },
+    },
+    xAxis: { type: 'category', data: labels, axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 8, interval: 3 } },
+    yAxis: { type: 'value', max: yMax, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
+    series: [{
+      type: 'line',
+      data: vals,
+      connectNulls: true,
+      showSymbol: false,
+      lineStyle: { color: C.navy, width: 2.2 },
+      areaStyle: { color: 'rgba(24,32,72,.07)' },
+      markLine: markLinePP(ppItem('y', 55, 'PP 55', C.yellow)),
+      markPoint: peakIdx >= 0 ? {
+        symbol: 'circle',
+        symbolSize: 7,
+        data: [{ coord: [labels[peakIdx], vals[peakIdx]], value: vals[peakIdx] }],
+        itemStyle: { color: C.terra, borderColor: '#fff', borderWidth: 1.4 },
+        label: { show: true, position: 'top', distance: 5, fontFamily: 'IBM Plex Mono', fontSize: 8, fontWeight: 600, color: C.navy, backgroundColor: 'rgba(255,255,255,.82)', padding: [2, 3], borderRadius: 3, formatter: `${labels[peakIdx]}:00 · ${fmt(vals[peakIdx], 1)}` },
+      } : undefined,
+    }],
+  });
+  return chart;
+}
+
 function makeCycleChart(id) {
   const { hours, natVals, road, peat } = cycleSeries();
   if (!natVals.some((v) => v != null)) return null;
@@ -3783,7 +4369,7 @@ function makeSiteClassChart(id) {
         const i = ps[0] ? ps[0].dataIndex : 0;
         const r = rows[i];
         const ratio = r.baseline ? r.mean / r.baseline : null;
-        return `<b>${esc(r.id)}</b><br>Baseline <b>${fmt(r.baseline, 1)}</b> µg/m³<br>Mean 2026 <b>${fmt(r.mean, 1)}</b> µg/m³${ratio ? `<br>${fmt(ratio, 2)}× baseline` : ''}<br>${r.n} stasiun`;
+        return `<b>${esc(r.id)}</b><br>Baseline <b>${fmt(r.baseline, 1)}</b> µg/m³<br>Rata-rata <b>${fmt(r.mean, 1)}</b> µg/m³${ratio ? `<br>${fmt(ratio, 2)}× baseline` : ''}<br>${r.n} stasiun`;
       },
     },
     xAxis: {
@@ -3804,7 +4390,7 @@ function makeSiteClassChart(id) {
     series: [
       { name: 'Baseline', type: 'bar', data: rows.map((r) => r.baseline), barWidth: 8, barGap: '30%', itemStyle: { color: '#8FA0C4', borderRadius: [0, 4, 4, 0] } },
       {
-        name: 'Mean 2026',
+        name: 'Rata-rata',
         type: 'bar',
         data: rows.map((r) => r.mean),
         barWidth: 8,
@@ -3870,17 +4456,17 @@ function detailSiteClass(cls) {
     ${detailMetrics([
       ['Stasiun', String(rows.length), ''],
       ['Baseline', fmt(baseline, 1), 'µg/m³'],
-      ['Mean 2026', fmt(mean, 1), 'µg/m³'],
+      ['Rata-rata', fmt(mean, 1), 'µg/m³'],
     ])}
     <div class="detail-list">
       <div class="row"><span>Rasio mean / baseline</span><b>${ratio ? `${fmt(ratio, 2)}×` : '—'}</b></div>
       <div class="row"><span>P95 2026 rata-rata</span><b>${fmt(p95, 1)} µg/m³</b></div>
     </div>
-    <div class="detail-block"><div class="detail-label">Stasiun · mean 2026</div>${detailBars(sorted.map((r) => ({ label: r.id, value: r.mean_2026 || 0, color: CAT_COLORS[categoryFromPm(r.mean_2026)] || C.navy })))}</div>
+    <div class="detail-block"><div class="detail-label">Stasiun · rata-rata</div>${detailBars(sorted.map((r) => ({ label: r.id, value: r.mean_2026 || 0, color: CAT_COLORS[categoryFromPm(r.mean_2026)] || C.navy })))}</div>
     <button class="primary-btn detail-cta" type="button" data-detail-go="wilayah">Buka Stasiun</button>`;
   return {
     key: `class:${cls}`,
-    kicker: 'Kelas lokasi · 1 Agu–14 Okt 2026',
+    kicker: `Kelas lokasi · ${DATA.view.label}`,
     title: cls,
     chip: cls,
     body,
@@ -3947,7 +4533,7 @@ function provValue(p) {
 function provUnitLabel() {
   const days = (DATA.hospitals.meta && DATA.hospitals.meta.days) || '';
   return state.provMetric === 'per100'
-    ? `kasus per 100 tempat tidur · ${days} hari`
+    ? `kunjungan per 100 tempat tidur · ${days} hari`
     : `kasus · ${days} hari`;
 }
 
@@ -3979,7 +4565,7 @@ function provFillExpr(breaks) {
 function provLegendTitle() {
   const days = (DATA.hospitals.meta && DATA.hospitals.meta.days) || '';
   return state.provMetric === 'per100'
-    ? `Kasus per 100 tempat tidur · ${days} hari`
+    ? `Kunjungan per 100 tempat tidur · ${days} hari`
     : `Kasus RS mitra · ${days} hari`;
 }
 
@@ -4005,7 +4591,7 @@ function provinceTip(name) {
   return `<div class="map-tip-h"><b>${esc(name)}</b></div>`
     + `<div class="map-tip-n">${fmtInt(p.actual.resp)}<small> kasus</small></div>`
     + `<div class="map-tip-s">${fmtInt(p.hospitals)} RS · ${fmtInt(p.beds)} tempat tidur</div>`
-    + `<div class="map-tip-s">${fmt(p.per100beds, 0)} kasus per 100 tempat tidur</div>`;
+    + `<div class="map-tip-s">${fmt(p.per100beds, 0)} kunjungan per 100 tempat tidur</div>`;
 }
 
 function addChoropleth(map, cho) {
@@ -4201,16 +4787,15 @@ function makeMapTip(el) {
   let html = '';
   const position = () => {
     if (node.hidden || !point) return;
-    const W = el.clientWidth;
-    const H = el.clientHeight;
-    if (!W || !H) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
     const w = node.offsetWidth;
     const h = node.offsetHeight;
-    let x = point.x + 12;
-    let y = point.y - h - 14;
-    if (y < 6) y = point.y + 18;
-    x = Math.max(6, Math.min(W - w - 6, x));
-    y = Math.max(6, Math.min(H - h - 6, y));
+    let x = rect.left + point.x + 12;
+    let y = rect.top + point.y - h - 14;
+    if (y < 6) y = rect.top + point.y + 18;
+    x = Math.max(6, Math.min(window.innerWidth - w - 6, x));
+    y = Math.max(6, Math.min(window.innerHeight - h - 6, y));
     node.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
   };
   return {
@@ -4488,161 +5073,6 @@ function addIslandLabels(map) {
     el.textContent = text;
     new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([lon, lat]).addTo(map);
   });
-}
-
-/* ------------------------------------------------------------------ story */
-const SCENES = [
-  { title: 'Perbandingan pulau', kicker: '01 / 06', source: 'metrics.json · 1 Agu–14 Okt 2026' },
-  { title: 'Perbandingan tahun', kicker: '02 / 06', source: 'metrics.json · 1 Sep–14 Okt' },
-  { title: 'Pola 24 jam', kicker: '03 / 06', source: 'metrics.json · indeks diurnal' },
-  { title: 'Estimasi kesehatan', kicker: '04 / 06', source: 'metrics.json · 1 Agu–14 Okt 2026' },
-  { title: 'Kualitas jaringan', kicker: '05 / 06', source: 'metrics.json · seluruh periode' },
-  { title: 'Jelajahi data', kicker: '06 / 06', source: 'metrics.json · 7 halaman' },
-];
-
-function openStory(scene = 1, push = true) {
-  state.story = true;
-  state.scene = Math.max(1, Math.min(6, scene));
-  closeFilters();
-  closeMore();
-  $('#story').hidden = false;
-  $('#mode-switch [data-mode=story]').classList.add('active');
-  $('#mode-switch [data-mode=explore]').classList.remove('active');
-  if (push) updateUrl();
-  requestAnimationFrame(() => {
-    if (!window.echarts) return;
-    if (!storyChart) storyChart = echarts.init($('#story-chart'));
-    renderStory();
-  });
-}
-
-function closeStory() {
-  state.story = false;
-  $('#story').hidden = true;
-  $('#mode-switch [data-mode=story]').classList.remove('active');
-  $('#mode-switch [data-mode=explore]').classList.add('active');
-  updateUrl();
-  if (state.page) render();
-}
-
-function setScene(n) {
-  state.scene = Math.max(1, Math.min(6, n));
-  updateUrl();
-  renderStory();
-}
-
-function renderStory() {
-  const s = SCENES[state.scene - 1];
-  $('#story-kicker').textContent = s.kicker;
-  $('#story-title').textContent = s.title;
-  $('#story-source').textContent = s.source;
-  $$('#story-dots .story-dot').forEach((b) => b.classList.toggle('active', Number(b.dataset.scene) === state.scene));
-  $('#story-prev').disabled = state.scene === 1;
-  $('#story-next').textContent = state.scene === 6 ? 'Selesai' : 'Lanjut →';
-  const kpis = storyKpis(state.scene);
-  $('#story-kpis').innerHTML = kpis.map(([v, u, l]) => `<div class="story-kpi"><span class="v">${v}</span><span class="u">${u}</span><span class="l">${l}</span></div>`).join('');
-  const chartEl = $('#story-chart');
-  const cards = $('#story-cards');
-  if (state.scene === 6) {
-    chartEl.style.display = 'none';
-    cards.hidden = false;
-    const pages = [
-      ['ringkasan', 'Ringkasan', 'Hotspot, tren, dan ranking stasiun', ['Peta', 'Tren', 'Ranking'], `${fmt(DATA.overview.kpis[0].value, 1)} µg/m³`, 'Sep–Okt 2026'],
-      ['waktu', 'Waktu', 'Kalender harian sampai pola 24 jam', ['Kalender', 'Episode', '24 jam'], `${fmt(DATA.time.diurnal['7'], 1)}%`, 'puncak 07.00'],
-      ['wilayah', 'Stasiun', 'Peta skematis dan profil per stasiun', ['PM2.5', 'ISPU', 'Profil'], `${DATA.meta.data_quality.stations}`, 'stasiun · 5 pulau'],
-      ['sumber', 'Sumber', 'Korelasi tingkat stasiun dan polutan', ['Korelasi', 'Polutan', 'Meteo'], `r ${fmt(DATA.sources.corr.all.baseline, 2).replace('.', ',')}`, 'baseline 2024–2026'],
-      ['kesehatan', 'Kesehatan', 'Observed vs expected dan lag paparan', ['Lag', 'Beban', 'Estimasi'], fmtInt(DATA.health.years[2].excess.resp), 'kasus respirasi'],
-      ['jaringan', 'Jaringan', 'Status, cakupan, dan gap data stasiun', ['Status', 'Cakupan', 'Gap'], `${DATA.network.status_counts.Baik}/${DATA.meta.data_quality.stations}`, 'stasiun berstatus Baik'],
-      ['metodologi', 'Metodologi', 'Definisi KPI, QC, dan batas klaim', ['QC', 'Definisi', 'Sitasi'], `hash ${DATA.meta.metrics_sha256 ? DATA.meta.metrics_sha256.slice(0, 8) : ''}…`, 'jejak data'],
-    ];
-    cards.innerHTML = pages.map(([page, t, d, tags, v, l], i) => `<button class="story-card" type="button" data-go="${page}"><span class="n">0${i + 1}</span><span class="t">${t}</span><span class="d">${d}</span><span class="tags">${tags.map((x) => `<i>${x}</i>`).join('')}</span><span class="m"><b>${v}</b>${l}</span><span class="go">Buka halaman →</span></button>`).join('');
-    $$('.story-card', cards).forEach((b) => b.addEventListener('click', () => { closeStory(); go(b.dataset.go); }));
-    return;
-  }
-  chartEl.style.display = '';
-  cards.hidden = true;
-  const option = storyOption(state.scene);
-  if (option) {
-    storyChart.setOption(option, true);
-    storyChart.resize();
-  }
-}
-
-function storyKpis(scene) {
-  const isl = DATA.overview.island26;
-  const kal = isl.find((r) => r.island === 'Kalimantan');
-  const jaw = isl.find((r) => r.island === 'Jawa');
-  const comp = DATA.overview.comp_year;
-  const by = Object.fromEntries(comp.map((r) => [r.year, r.pm25]));
-  const y = DATA.health.years[2];
-  const counts = DATA.network.status_counts;
-  if (scene === 1) return [[fmt(kal.mean, 1), 'µg/m³', 'Kalimantan'], [fmt(kal.mean / jaw.mean, 1), '×', 'Jawa']];
-  if (scene === 2) return [[fmt(by[2026], 1), 'µg/m³', '2026'], [fmt(by[2026] / by[2024], 1), '×', '2024'], [fmt(by[2026] / by[2025], 1), '×', '2025']];
-  if (scene === 3) return [[fmt(DATA.time.diurnal['7'], 1), '%', '07.00'], [fmt(DATA.time.diurnal['18'], 1), '%', '18.00'], [fmt(DATA.time.diurnal['12'], 1), '%', '12.00']];
-  if (scene === 4) return [[fmtInt(y.excess.resp), 'kasus', 'Respirasi'], [fmtInt(y.excess.resp_admissions_under5), 'kasus', 'Balita'], [fmtInt(y.excess.resp_admissions_over60), 'kasus', 'Lansia'], [fmtInt(y.excess.death), 'kasus', 'Kematian']];
-  if (scene === 5) return [[`${counts.Baik}/${DATA.meta.data_quality.stations}`, '', 'Baik'], [String(DATA.meta.data_quality.stations - counts.Baik), '', 'Bermasalah']];
-  return [];
-}
-
-function storyOption(scene) {
-  if (scene === 1) {
-    const rows = DATA.overview.island26.slice().sort((a, b) => b.mean - a.mean);
-    return {
-      aria: { enabled: true },
-      grid: { left: 90, right: 50, top: 20, bottom: 26 },
-      tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.name)}</b><br>${fmt(p.value, 1)} µg/m³` },
-      xAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 10 } },
-      yAxis: { type: 'category', inverse: true, data: rows.map((r) => r.island), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: 12 } },
-      series: [{ type: 'bar', data: rows.map((r) => ({ value: r.mean, itemStyle: { color: r.island === 'Kalimantan' ? C.terra : C.navy, borderRadius: [0, 4, 4, 0] } })), barWidth: 18, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 11, color: C.navy, formatter: (p) => fmt(p.value, 1) } }],
-    };
-  }
-  if (scene === 2) {
-    const rows = DATA.overview.comp_year;
-    return {
-      aria: { enabled: true },
-      grid: { left: 56, right: 20, top: 20, bottom: 30 },
-      tooltip: { ...tooltipBase(), formatter: (p) => `<b>${p.name}</b><br>${fmt(p.value, 1)} µg/m³` },
-      xAxis: { type: 'category', data: rows.map((r) => String(r.year)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: 12 } },
-      yAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 10 } },
-      series: [{ type: 'bar', data: rows.map((r) => ({ value: r.pm25, itemStyle: { color: r.year === 2026 ? C.yellow : C.navy, borderRadius: [4, 4, 0, 0] } })), barWidth: 46, label: { show: true, position: 'top', fontFamily: 'IBM Plex Mono', fontSize: 11, color: C.navy, formatter: (p) => fmt(p.value, 1) } }],
-    };
-  }
-  if (scene === 3) {
-    const rows = Object.entries(DATA.time.diurnal).map(([h, v]) => [String(h).padStart(2, '0'), v]);
-    return {
-      aria: { enabled: true },
-      grid: { left: 56, right: 20, top: 24, bottom: 30 },
-      tooltip: { ...tooltipBase(), trigger: 'axis', formatter: (ps) => `<b>${ps[0].axisValue}:00</b><br>${fmt(ps[0].value, 1)}%` },
-      xAxis: { type: 'category', data: rows.map((r) => r[0]), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 10, interval: 2 } },
-      yAxis: { type: 'value', min: 80, max: 140, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 10, formatter: '{value}%' } },
-      series: [{ type: 'line', data: rows.map((r) => r[1]), symbol: 'circle', symbolSize: 4, lineStyle: { width: 2.4, color: C.navy }, itemStyle: { color: C.navy }, areaStyle: { color: 'rgba(231,179,58,.18)' }, markPoint: { symbol: 'circle', symbolSize: 9, itemStyle: { color: C.yellow, borderColor: C.navy, borderWidth: 1.5 }, label: { show: true, position: 'top', fontFamily: 'IBM Plex Mono', fontSize: 10, color: C.navy, formatter: (p) => `${fmt(p.value, 1)}%` }, data: [{ coord: ['07', DATA.time.diurnal['7']], value: DATA.time.diurnal['7'] }, { coord: ['18', DATA.time.diurnal['18']], value: DATA.time.diurnal['18'] }] } }],
-    };
-  }
-  if (scene === 4) {
-    const y = DATA.health.years[2];
-    const keys = ['resp', 'resp_admissions_under5', 'resp_admissions_over60', 'death'];
-    return {
-      aria: { enabled: true },
-      grid: { left: 100, right: 60, top: 20, bottom: 26 },
-      tooltip: { ...tooltipBase(), formatter: (p) => `<b>${OUTCOME_LABELS[keys[p.dataIndex]]}</b><br>+${fmtInt(p.value)}` },
-      xAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 10, formatter: (v) => fmtInt(v) } },
-      yAxis: { type: 'category', inverse: true, data: keys.map((k) => OUTCOME_LABELS[k]), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: 12 } },
-      series: [{ type: 'bar', data: keys.map((k) => y.excess[k]), barWidth: 22, itemStyle: { color: C.terra, borderRadius: [0, 4, 4, 0] }, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 11, color: C.navy, formatter: (p) => '+' + fmtInt(p.value) } }],
-    };
-  }
-  if (scene === 5) {
-    const counts = DATA.network.status_counts;
-    const rows = STATUS_ORDER.map((s) => ({ name: s, value: counts[s] || 0 }));
-    return {
-      aria: { enabled: true },
-      grid: { left: 110, right: 50, top: 20, bottom: 26 },
-      tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.name)}</b><br>${p.value} stasiun` },
-      xAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 10 } },
-      yAxis: { type: 'category', inverse: true, data: rows.map((r) => r.name), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: 12 } },
-      series: [{ type: 'bar', data: rows.map((r) => ({ value: r.value, itemStyle: { color: r.name === 'Baik' ? C.teal : r.name === 'Perhatian' ? C.yellow : r.name === 'Terbatas' ? C.terra : r.name === 'Tidak memadai' ? '#C0453C' : C.red, borderRadius: [0, 4, 4, 0] } })), barWidth: 20, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 11, color: C.navy } }],
-    };
-  }
-  return null;
 }
 
 /* ------------------------------------------------------------------ tip */

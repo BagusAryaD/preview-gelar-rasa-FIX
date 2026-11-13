@@ -54,7 +54,7 @@
         </a>
       </nav>
       <div class="sidebar-foot">
-        <div class="foot-line"><span class="dot green"></span> Data hingga 14 Okt 2026</div>
+        <div class="foot-line"><span class="dot green"></span> <span id="foot-end">Data hingga</span></div>
         <div class="foot-line mono" id="foot-hash">metrics.json</div>
         <div class="foot-line muted">Sumber: 33 file panitia</div>
         <div class="foot-brand">
@@ -83,10 +83,6 @@
           <span id="back-chip-label"></span>
         </button>
         <div class="top-actions">
-          <div class="seg" id="mode-switch" role="group" aria-label="Mode tampilan">
-            <button type="button" data-mode="explore" class="active">Explore</button>
-            <button type="button" data-mode="story">Story</button>
-          </div>
           <button class="icon-btn mobile-only" id="btn-filter-mobile" type="button" aria-label="Buka filter" aria-expanded="false">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
           </button>
@@ -102,8 +98,17 @@
           <button class="icon-btn" id="btn-filter-close" type="button" aria-label="Tutup filter">✕</button>
         </div>
         <div class="filter-group">
-          <span class="filter-label">Periode</span>
-          <span class="pill static" id="period-pill">1 Sep–14 Okt 2026</span>
+          <label class="filter-label" for="filter-date">Tanggal acuan</label>
+          <input class="select date-input" type="date" id="filter-date" min="2024-01-01" max="2026-10-14" value="2026-10-14">
+        </div>
+        <div class="filter-group">
+          <span class="filter-label" id="range-label">Rentang</span>
+          <div class="seg" id="range-seg" role="group" aria-labelledby="range-label">
+            <button type="button" data-range="hari" aria-pressed="false">Hari</button>
+            <button type="button" data-range="bulan" aria-pressed="false">Bulan</button>
+            <button type="button" data-range="tahun" class="active" aria-pressed="true">Tahun</button>
+            <button type="button" data-range="semua" aria-pressed="false">Semua</button>
+          </div>
         </div>
         <div class="filter-group">
           <label class="filter-label" for="filter-island">Pulau</label>
@@ -113,8 +118,8 @@
           <label class="filter-label" for="filter-station">Stasiun</label>
           <select class="select wide" id="filter-station"></select>
         </div>
-        <span class="pill qc" data-tip="Preview memakai QC utama: VALID + SUSPECT yang lolos physical range. JMB-02/MER-01 hanya VALID.">
-          <span class="dot green"></span> QC utama
+        <span class="pill qc" data-tip="Preview memakai data yang lolos pemeriksaan mutu: nilai dalam rentang wajar dan tidak ditandai rusak.">
+          <span class="dot green"></span> Data lolos pemeriksaan
         </span>
         <div class="filter-spacer"></div>
         <div class="filter-actions">
@@ -179,41 +184,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v18H6.5A2.5 2.5 0 0 0 4 22Z"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M8 6h8M8 10h6"/></svg>
       <span>Metodologi</span>
     </a>
-    <button class="more-item" id="more-story" type="button">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H4z"/><path d="M8 20h8M12 16v4"/><path d="m9 10 2 2 4-4"/></svg>
-      <span>Story Mode</span>
-    </button>
     <button class="more-item" id="more-share" type="button">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.07 0l2-2a5 5 0 0 0-7.07-7.07l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.07 0l-2 2a5 5 0 0 0 7.07 7.07l1.1-1.1"/></svg>
       <span>Salin tautan</span>
     </button>
-  </div>
-
-  <div class="story" id="story" hidden>
-    <div class="story-top">
-      <div class="story-brand">
-        <div class="logo-chip small"><img src="assets/logo.png" alt="Gelar Rasa"></div>
-        <span>Story Mode</span>
-      </div>
-      <div class="story-progress" id="story-dots"></div>
-      <button class="icon-btn light" id="story-close" type="button" aria-label="Tutup Story Mode">✕</button>
-    </div>
-    <div class="story-body">
-      <div class="story-kicker" id="story-kicker"></div>
-      <h1 class="story-title" id="story-title"></h1>
-      <div class="story-kpis" id="story-kpis"></div>
-      <div class="story-visual">
-        <div class="chart" id="story-chart"></div>
-        <div class="story-cards" id="story-cards" hidden></div>
-      </div>
-      <div class="story-foot">
-        <span class="story-source" id="story-source"></span>
-        <div class="story-nav">
-          <button class="ghost-btn" id="story-prev" type="button">← Sebelumnya</button>
-          <button class="primary-btn" id="story-next" type="button">Lanjut →</button>
-        </div>
-      </div>
-    </div>
   </div>
 
   <div class="toast" id="toast" hidden></div>
