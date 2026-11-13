@@ -98,8 +98,7 @@
           <button class="icon-btn" id="btn-filter-close" type="button" aria-label="Tutup filter">✕</button>
         </div>
         <div class="filter-group">
-          <label class="filter-label" for="filter-date">Tanggal acuan</label>
-          <input class="select date-input" type="date" id="filter-date" min="2024-01-01" max="2026-10-14" value="2026-10-14">
+          <input class="select date-input" type="date" id="filter-date" min="2024-01-01" max="2026-10-14" value="2026-10-14" aria-label="Tanggal acuan" title="Tanggal acuan">
         </div>
         <div class="filter-group">
           <span class="filter-label" id="range-label">Rentang</span>
@@ -112,19 +111,21 @@
         </div>
         <div class="filter-group">
           <label class="filter-label" for="filter-island">Pulau</label>
-          <select class="select" id="filter-island"></select>
+          <select class="select" id="filter-island" aria-label="Pulau"></select>
         </div>
         <div class="filter-group">
           <label class="filter-label" for="filter-station">Stasiun</label>
-          <select class="select wide" id="filter-station"></select>
+          <select class="select wide" id="filter-station" aria-label="Stasiun"></select>
         </div>
-        <span class="pill qc" data-tip="Preview memakai data yang lolos pemeriksaan mutu: nilai dalam rentang wajar dan tidak ditandai rusak.">
-          <span class="dot green"></span> Data lolos pemeriksaan
-        </span>
-        <div class="filter-spacer"></div>
-        <div class="filter-actions">
-          <button class="ghost-btn" id="btn-reset" type="button">Reset</button>
-          <button class="primary-btn mobile-only" id="btn-filter-apply" type="button">Terapkan</button>
+        <div class="filter-right">
+          <span class="pill qc" data-tip="Preview memakai data yang lolos pemeriksaan mutu: nilai dalam rentang wajar dan tidak ditandai rusak.">
+            <span class="dot green"></span> Data lolos pemeriksaan
+          </span>
+          <div class="filter-spacer"></div>
+          <div class="filter-actions">
+            <button class="ghost-btn" id="btn-reset" type="button">Reset</button>
+            <button class="primary-btn mobile-only" id="btn-filter-apply" type="button">Terapkan</button>
+          </div>
         </div>
       </div>
 
