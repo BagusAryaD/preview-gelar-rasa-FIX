@@ -1132,9 +1132,11 @@ dump(
 
 # ------------------------------------------------------- daily range exports
 # hourly curve per date and scope (national + islands), for the 24-hour cycle
-hourly_payload = {"dates": [], "scopes": {}}
+class_of_station = dict(zip(station_table["station"], station_table["site_class"]))
+hourly_payload = {"dates": [], "scopes": {}, "classes": [], "class_scopes": {}}
 if "clean" in globals():
     cl = clean.dropna(subset=["pm25"]).copy()
+    cl["site_class"] = cl["station"].map(class_of_station)
     dates = sorted(cl["date_key"].unique())
     groups = [("Nasional", cl)] + [(str(i), g) for i, g in cl.groupby("island")]
     for name, g in groups:
@@ -1143,7 +1145,20 @@ if "clean" in globals():
         hourly_payload["scopes"][name] = [
             [None if pd.isna(v) else round(float(v), 1) for v in row] for row in mat.to_numpy()
         ]
+        per_class = {}
+        for cls, gc in g.groupby("site_class"):
+            if not isinstance(cls, str):
+                continue
+            cmat = gc.groupby(["date_key", "hour"])["pm25"].mean().unstack("hour")
+            cmat = cmat.reindex(index=dates, columns=list(range(24)))
+            per_class[cls] = [
+                [None if pd.isna(v) else round(float(v), 1) for v in row] for row in cmat.to_numpy()
+            ]
+        hourly_payload["class_scopes"][name] = per_class
     hourly_payload["dates"] = dates
+    hourly_payload["classes"] = sorted(
+        {c for per in hourly_payload["class_scopes"].values() for c in per.keys()}
+    )
 
 # daily pollutants + meteorology per station (Tanggal acuan / Rentang)
 POLL_KEYS = ["pm10", "so2", "no2", "o3", "co", "temp", "hum", "wind"]
