@@ -1160,6 +1160,20 @@ if "clean" in globals():
         {c for per in hourly_payload["class_scopes"].values() for c in per.keys()}
     )
 
+# Matriks jam per stasiun (kurva 24 jam + mode Hari untuk stasiun terpilih).
+# Dipisah dari hourly.json supaya halaman tetap ringan saat dimuat.
+hourly_stations_payload = {"dates": [], "stations": {}}
+if "clean" in globals():
+    _hs = clean.dropna(subset=["pm25"])
+    _hs_dates = sorted(_hs["date_key"].unique())
+    for _st, _g in _hs.groupby("station"):
+        _mat = _g.groupby(["date_key", "hour"])["pm25"].mean().unstack("hour")
+        _mat = _mat.reindex(index=_hs_dates, columns=list(range(24)))
+        hourly_stations_payload["stations"][str(_st)] = [
+            [None if pd.isna(v) else round(float(v), 1) for v in row] for row in _mat.to_numpy()
+        ]
+    hourly_stations_payload["dates"] = _hs_dates
+
 # daily pollutants + meteorology per station (Tanggal acuan / Rentang)
 POLL_KEYS = ["pm10", "so2", "no2", "o3", "co", "temp", "hum", "wind"]
 pollutants_payload = {"keys": POLL_KEYS, "stations": {}}
@@ -1181,6 +1195,7 @@ for hid, g in _health_known.sort_values(["hospital_id", "date"]).groupby("hospit
     health_daily_payload["hospitals"][str(hid)] = rows
 
 dump("hourly.json", hourly_payload)
+dump("hourly_stations.json", hourly_stations_payload)
 dump("pollutants.json", pollutants_payload)
 dump("health_daily.json", health_daily_payload)
 

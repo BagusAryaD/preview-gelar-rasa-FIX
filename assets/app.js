@@ -146,20 +146,6 @@ function toast(msg) {
   t._timer = setTimeout(() => { t.hidden = true; }, 1800);
 }
 
-function downloadCSV(filename, rows) {
-  const body = rows.map((r) => r.map((v) => {
-    const s = v == null ? '' : String(v);
-    return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  }).join(';')).join('\n');
-  const blob = new Blob(['\ufeff' + body], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
 
 /* ------------------------------------------------------------------ boot */
 async function boot() {
@@ -167,7 +153,7 @@ async function boot() {
     $('#page').innerHTML = `<div class="empty"><div>Library chart belum termuat.</div><div class="card-sub">Periksa koneksi CDN, lalu muat ulang.</div></div>`;
     return;
   }
-  const files = ['meta', 'overview', 'stations', 'time', 'sources', 'health', 'hospitals', 'network', 'method', 'hourly', 'pollutants', 'health_daily'];
+  const files = ['meta', 'overview', 'stations', 'time', 'sources', 'health', 'hospitals', 'network', 'method', 'hourly', 'hourly_stations', 'pollutants', 'health_daily'];
   try {
     const payloads = await Promise.all(files.map((f) => fetch(`data/${f}.json`).then((r) => {
       if (!r.ok) throw new Error(`${f}.json ${r.status}`);
@@ -192,8 +178,6 @@ async function boot() {
     rows.forEach((r) => m.set(r[0], r[1]));
     DATA.stationDayIndex[id] = m;
   });
-  DATA.hourlyIndex = {};
-  ((DATA.hourly && DATA.hourly.dates) || []).forEach((d, i) => { DATA.hourlyIndex[d] = i; });
   parseUrl();
   initShell();
   applyRange();
@@ -304,7 +288,7 @@ function networkMeanPeriod() {
 
 /* Penjelas tiap opsi rentang — jendela konkret dihitung dari tanggal acuan. */
 const RANGE_TIPS = {
-  hari: 'Satu hari penuh pada tanggal acuan. Kurva 24 jam memakai jam-jaman tanggal itu.',
+  hari: 'Satu hari penuh pada tanggal acuan.',
   bulan: 'Dari tanggal 1 bulan berjalan sampai tanggal acuan.',
   tahun: 'Dari 1 Januari tahun berjalan sampai tanggal acuan.',
   semua: 'Seluruh periode data yang tersedia, tanpa batas tahun.',
@@ -639,33 +623,84 @@ function applySourceRange(from, to) {
   DATA.sources.only2026 = updateScatter(DATA.sources.only2026);
 }
 
-function hourlySeries() {
-  const key = state.station ? null : (state.island === 'Semua' ? 'Nasional' : state.island);
-  if (key && DATA.hourly && DATA.hourly.scopes[key]) {
-    const [from, to] = rangeBounds();
-    const sums = new Array(24).fill(0);
-    const counts = new Array(24).fill(0);
-    const dates = DATA.hourly.dates || [];
-    const mat = DATA.hourly.scopes[key];
-    for (let i = 0; i < dates.length; i += 1) {
-      if (dates[i] < from || dates[i] > to) continue;
-      const row = mat[i];
-      for (let h = 0; h < 24; h += 1) {
-        const v = row[h];
-        if (v == null) continue;
-        sums[h] += v;
-        counts[h] += 1;
-      }
-    }
-    if (counts.some((c) => c > 0)) {
-      return sums.map((s, h) => ({ hour: h, pm25: counts[h] ? round1(s / counts[h]) : null, n: counts[h] }));
+/* ------------------------------------------------------- kurva 24 jam (µg/m³) */
+const HOUR_LABELS = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
+
+/* Nama lokasi baku — dipakai semua plot 24 jam supaya istilahnya seragam. */
+function scopeLabel() {
+  if (state.station) return state.station;
+  return state.island === 'Semua' ? 'Nasional' : state.island;
+}
+
+/* Nama kelas lokasi dalam bahasa Indonesia (legenda, tooltip, rincian). */
+const CLASS_LABELS = {
+  'Traffic/Roadside': 'Koridor jalan',
+  'Peatland/Forest': 'Lahan gambut',
+  Industrial: 'Industri',
+  'Urban Background': 'Latar perkotaan',
+  'Clean/Regional': 'Luar kota',
+};
+function classLabel(cls) { return CLASS_LABELS[cls] || cls; }
+
+/* Rata-rata per jam pada rentang aktif + rata-rata harian (µg/m³).
+   mat = larik [tanggal][24 jam]; tanggal disejajarkan lewat dates. */
+function hourMeans(dates, mat, from, to) {
+  const sums = new Array(24).fill(0);
+  const counts = new Array(24).fill(0);
+  let total = 0;
+  let totalN = 0;
+  for (let i = 0; i < dates.length; i += 1) {
+    if (dates[i] < from || dates[i] > to) continue;
+    const row = mat[i];
+    if (!row) continue;
+    for (let h = 0; h < 24; h += 1) {
+      const v = row[h];
+      if (v == null) continue;
+      sums[h] += v;
+      counts[h] += 1;
+      total += v;
+      totalN += 1;
     }
   }
-  const st = state.station ? (DATA.time.station_hour[state.station] || []) : [];
-  if (st.length) return st;
-  return (state.island !== 'Semua' && DATA.time.hour_dow_by_island[state.island])
-    ? aggregateHours(DATA.time.hour_dow_by_island[state.island])
-    : (DATA.time.hour_dow_all ? aggregateHours(DATA.time.hour_dow_all) : []);
+  return {
+    means: sums.map((s, h) => (counts[h] ? round1(s / counts[h]) : null)),
+    counts,
+    daily: totalN ? round1(total / totalN) : null,
+  };
+}
+
+/* Matriks jam cakupan terpilih: stasiun bila dipilih, kalau tidak pulau/nasional. */
+function hourlyScopeMatrix() {
+  const hs = DATA.hourly_stations || {};
+  if (state.station && hs.stations && hs.stations[state.station]) {
+    return { dates: hs.dates || [], mat: hs.stations[state.station] };
+  }
+  const h = DATA.hourly || {};
+  const key = state.island === 'Semua' ? 'Nasional' : state.island;
+  return { dates: h.dates || [], mat: (h.scopes || {})[key] || null };
+}
+
+/* Kurva 24 jam cakupan terpilih pada rentang aktif (mode Hari = tanggal itu). */
+function diurnalCurve() {
+  const [from, to] = rangeBounds();
+  const { dates, mat } = hourlyScopeMatrix();
+  const out = mat
+    ? hourMeans(dates, mat, from, to)
+    : { means: new Array(24).fill(null), counts: new Array(24).fill(0), daily: null };
+  return { ...out, label: scopeLabel(), from, to };
+}
+
+/* Kurva 24 jam tiap kelas lokasi pada pulau aktif (tidak tersedia per stasiun). */
+function diurnalClassCurves() {
+  const [from, to] = rangeBounds();
+  const h = DATA.hourly || {};
+  const key = state.island === 'Semua' ? 'Nasional' : state.island;
+  const per = (h.class_scopes || {})[key] || {};
+  const dates = h.dates || [];
+  return Object.keys(per).map((cls) => {
+    const r = hourMeans(dates, per[cls], from, to);
+    return { cls, label: classLabel(cls), vals: r.means, daily: r.daily };
+  }).filter((s) => s.vals.some((v) => v != null));
 }
 
 function applyRange() {
@@ -991,41 +1026,10 @@ function onPageClick(e) {
   if (act) {
     e.preventDefault();
     const a = act.dataset.action;
-    if (a === 'export-station') exportStation();
     if (a === 'back-origin') returnToOrigin();
     if (a === 'compare-station') {
       const spec = detailCompare();
       if (spec) openDetail(spec);
-    }
-    if (a === 'download-metrics') {
-      const link = document.createElement('a');
-      link.href = 'data/metrics.json';
-      link.download = 'metrics.json';
-      link.click();
-    }
-    if (a === 'download-stations') {
-      const link = document.createElement('a');
-      link.href = 'data/stations.json';
-      link.download = 'stations.json';
-      link.click();
-    }
-    if (a === 'download-overview') {
-      downloadCSV(`napas_ranking_${state.range}.csv`, [['station', 'island', 'mean', 'p95', 'max', 'days', 'status', 'rentang'], ...topRows().map((r) => [r.id, r.island, r.mean_2026, r.p95_2026, r.max_2026, r.days_2026, r.status, DATA.view.label])]);
-    }
-    if (a === 'download-source') {
-      const rows = sourceRows();
-      downloadCSV('napas_sumber.csv', [['station', 'pm25', 'baseline', 'distance', 'traffic', 'days', 'status'], ...rows.map((r) => [r.station, r.pm25, r.baseline, r.distance, r.traffic, r.days, r.status])]);
-    }
-    if (a === 'download-health') {
-      const span = healthSpan();
-      downloadCSV('napas_kesehatan.csv', [['outcome', 'kunjungan', 'hari', 'rentang'], ...DATA.health.outcomes.map((o) => [o.label, span.actual[o.key] || 0, span.days, DATA.view.label])]);
-    }
-    if (a === 'download-daily') {
-      downloadCSV('napas_harian_nasional.csv', [['date', 'pm25', 'stations'], ...DATA.time.daily.map((r) => [r[0], r[1], r[2]])]);
-    }
-    if (a === 'download-network') {
-      const rows = networkRows();
-      downloadCSV(`napas_jaringan_${state.range}.csv`, [['station', 'island', 'status', 'usable_pct', 'mean', 'gap', 'rentang'], ...rows.map((r) => [r.station, r.island, r.status, r.usable_pct, r.mean_2026, r.gap, DATA.view.label])]);
     }
   }
 }
@@ -1306,10 +1310,6 @@ function timeScopeRows() {
   return state.island === 'Semua' ? DATA.time.daily : (DATA.time.daily_island[state.island] || []);
 }
 
-function scopeLabel() {
-  return state.station || (state.island === 'Semua' ? 'Nasional' : state.island);
-}
-
 function detailDay(dateStr) {
   const rows = timeScopeRows();
   const row = rows.find((r) => r[0] === dateStr);
@@ -1376,34 +1376,6 @@ function detailHourDow(hour, dow) {
   };
 }
 
-function detailDiurnalClass(cls) {
-  const found = classDiurnalSeries().find((s) => s.cls === cls);
-  const series = (found && found.values) || [];
-  const members = DATA.stations.stations.filter((s) => s.site_class === cls);
-  const hours = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
-  const vals = series.filter((v) => v != null && Number.isFinite(v));
-  const peak = vals.length ? Math.max(...vals) : null;
-  const low = vals.length ? Math.min(...vals) : null;
-  const body = `
-    ${detailMetrics([
-      ['Kelas', esc(cls), ''],
-      ['Puncak', peak == null ? '—' : fmt(peak, 1), '%'],
-      ['Terendah', low == null ? '—' : fmt(low, 1), '%'],
-    ])}
-    <div class="detail-block"><div class="detail-label">Indeks 24 jam · 100 = rata-rata</div>
-      ${detailBars(hours.map((h, i) => ({ label: h, value: series[i] == null ? 0 : series[i], color: series[i] != null && series[i] >= 100 ? (DIURNAL_COLORS[cls] || C.navy) : C.grey2, display: series[i] == null ? '—' : `${fmt(series[i], 0)}%` })))}
-    </div>
-    <div class="detail-block"><div class="detail-label">Stasiun kelas ini</div>
-      ${detailBars(members.map((s) => ({ label: s.id, value: s.mean_2026, id: s.id, color: CAT_COLORS[categoryFromPm(s.mean_2026)] || C.navy })))}
-    </div>`;
-  return {
-    key: `diurnal:${cls}:${DATA.view.label}`,
-    kicker: 'Siklus 24 jam per kelas lokasi',
-    title: cls,
-    chip: cls,
-    body,
-  };
-}
 
 function detailEpisodeMonth(month) {
   const rows = (DATA.time.episode_monthly_island || []).filter((r) => r.month === month);
@@ -1551,7 +1523,7 @@ function detailPollutantPair(a, b) {
       ['Observasi', fmtInt(p.n), 'jam'],
     ])}
     <div class="detail-block"><div class="detail-label">${esc(a)} vs polutan lain · |r|</div>${detailBars(row)}</div>
-    <div class="detail-note">Korelasi jam-jaman antar polutan · r negatif berwarna jingga</div>`;
+    <div class="detail-note">Korelasi antar polutan · r negatif berwarna jingga</div>`;
   return {
     key: `pair:${a}:${b}`,
     kicker: 'Matriks korelasi polutan',
@@ -1566,8 +1538,8 @@ const WIND_SPEEDS = ['0–0,5', '0,5–1,5', '1,5–3,3', '3,3–5,5', '>5,5'];
 const WIND_COLORS = ['#FFF3BF', '#E3A008', '#D9663F', '#B3261E', '#182048'];
 
 function detailWindSector(dir) {
-  const id = state.windStation || 'PLB-01';
-  const w = DATA.sources.windrose[id];
+  const id = windStationId();
+  const w = id ? DATA.sources.windrose[id] : null;
   if (!w) return null;
   const di = WIND_DIRS.indexOf(dir);
   if (di < 0) return null;
@@ -1617,40 +1589,6 @@ function detailSourceStation(id) {
     title: id,
     chip: id,
     body,
-  };
-}
-
-function detailMeteo(id) {
-  const row = (DATA.sources.meteo_corr || []).find((r) => r.station === id);
-  if (!row) return null;
-  const hasWind = filteredSourceStations().includes(id) && !!DATA.sources.windrose[id];
-  const bars = [
-    { label: 'Suhu', value: row.temp == null ? 0 : Math.abs(row.temp), display: fmtR(row.temp), color: C.terra },
-    { label: 'Kelembapan', value: row.hum == null ? 0 : Math.abs(row.hum), display: fmtR(row.hum), color: C.teal },
-    { label: 'Angin', value: row.wind == null ? 0 : Math.abs(row.wind), display: fmtR(row.wind), color: C.navy },
-  ];
-  const body = `
-    ${detailMetrics([
-      ['Observasi', fmtInt(row.n), 'jam'],
-      ['r terkuat', bars.slice().sort((a, b) => b.value - a.value)[0].label, ''],
-      ['Pulau', esc(row.island || '—'), ''],
-    ])}
-    <div class="detail-block"><div class="detail-label">Korelasi meteorologi · |r|</div>${detailBars(bars)}</div>
-    ${hasWind ? `<button class="primary-btn detail-cta" type="button" data-wind="${esc(id)}">Lihat wind rose</button>` : '<div class="detail-note">Wind rose tidak tersedia untuk stasiun ini</div>'}`;
-  return {
-    key: `meteo:${id}`,
-    kicker: 'Meteorologi · korelasi jam-jaman',
-    title: id,
-    chip: id,
-    body,
-    after: (root) => {
-      const btn = root.querySelector('[data-wind]');
-      if (btn) btn.addEventListener('click', () => {
-        state.windStation = id;
-        closeDetail(true);
-        render();
-      });
-    },
   };
 }
 
@@ -2021,7 +1959,7 @@ function periodLabel() {
 
 function syncFilters() {
   const islandPages = ['ringkasan', 'waktu', 'wilayah', 'sumber', 'kesehatan', 'jaringan'];
-  const stationPages = ['ringkasan', 'waktu', 'wilayah'];
+  const stationPages = ['ringkasan', 'waktu', 'wilayah', 'sumber'];
   const isl = $('#filter-island');
   const st = $('#filter-station');
   isl.disabled = !islandPages.includes(state.page);
@@ -2117,7 +2055,7 @@ function catBadge(cat, share) {
 }
 const ISLAND_COLORS = { Sumatera: '#D9663F', Jawa: '#182048', Kalimantan: '#E3A008', Sulawesi: '#0F9D8A', Papua: '#5C8FD6' };
 const CAT_ORDER = ['Baik', 'Sedang', 'Tidak Sehat', 'Sangat Tidak Sehat', 'Berbahaya'];
-const DIURNAL_COLORS = { 'Clean/Regional': '#0F9D8A', Industrial: '#D9663F', 'Peatland/Forest': '#6B9B2E', 'Traffic/Roadside': '#182048', 'Urban Background': '#E3A008' };
+const DIURNAL_COLORS = { 'Clean/Regional': '#0F9D8A', Industrial: '#D9663F', 'Peatland/Forest': '#6B9B2E', 'Traffic/Roadside': '#B3261E', 'Urban Background': '#E3A008' };
 
 function scopeStats() {
   const stats = DATA.overview.stats_window;
@@ -2328,9 +2266,7 @@ function renderOverview() {
     </div>
     <div class="grid-12">
       ${card('Ranking pulau', `µg/m³ · ${DATA.view.label}`, `<div class="chart" id="chart-rank-island"></div>`, { cls: 'span-3 h-320' })}
-      ${state.range === 'hari'
-        ? card('24 jam · tanggal acuan', `µg/m³ · per jam · ${dayMonth(state.date)}`, `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', right: '<div class="card-sub">jam-jaman</div>', period: state.station ? 'full' : 'day' })
-        : card('Siklus 24 jam', 'indeks % · 100 = rata-rata harian', `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', period: 'full' })}
+      ${card('Siklus 24 jam', `µg/m³ · per jam · ${scopeLabel()}`, `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">${esc(diurnalNote())}</div>`, period: 'range' })}
       ${card('Kunjungan per kategori', `kasus · ${healthSpan().days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual</div>', period: 'range' })}
     </div>
     <div class="grid-12">
@@ -2412,7 +2348,7 @@ function afterOverview() {
       }
     },
   });
-  if (state.range === 'hari') makeDayHourChart('chart-cycle'); else makeCycleChart('chart-cycle');
+  makeCycleChart('chart-cycle');
   makeObservedChart('chart-ov-health', { grid: { left: 92, right: 48, top: 24, bottom: 24 }, yFont: 9 });
   makeSiteClassChart('chart-class');
   const islands = DATA.overview.island26.slice().sort((a, b) => b.mean - a.mean).map((r) => ({ id: r.island, value: r.mean, cat: categoryFromPm(r.mean), days: r.days }));
@@ -2524,9 +2460,10 @@ function pmLegend() {
 
 /* ------------------------------------------------------------------ time */
 function timeKpis() {
-  const sub = `${state.station || (state.island === 'Semua' ? 'Nasional' : state.island)} · ${DATA.view.label}`;
-  const hours = hourlySeries();
-  const peak = hours.length ? hours.filter((h) => h.pm25 != null).sort((a, b) => b.pm25 - a.pm25)[0] : null;
+  const sub = `${scopeLabel()} · ${DATA.view.label}`;
+  const curve = diurnalCurve();
+  const peakIdx = curve.means.reduce((best, v, i) => (v != null && (best < 0 || v > curve.means[best]) ? i : best), -1);
+  const peak = peakIdx >= 0 ? { hour: peakIdx, pm25: curve.means[peakIdx] } : null;
   const w26 = state.island === 'Semua' ? DATA.time.weekday.find((r) => r.year === 2026) : (DATA.time.weekday_island || []).find((r) => r.year === 2026 && r.island === state.island);
   const diff = w26 && w26.weekend != null && w26.weekday != null ? w26.weekend - w26.weekday : null;
   const scope = scopeStats();
@@ -2544,18 +2481,14 @@ function timeKpis() {
     { id: 'streak', label: 'Rentetan episode terpanjang', value: streak ? fmtInt(streak) : '—', unit: 'hari', baseline: streakStation ? `${streakStation} · >55 µg/m³` : '', window: '2024–2026', note: 'hari berurutan >55 µg/m³ · seluruh periode' },
   ];
 }
-function aggregateHours(rows) {
-  const map = new Map();
-  rows.forEach((r) => {
-    const cur = map.get(r.hour) || { sum: 0, n: 0 };
-    cur.sum += r.pm25 * r.n; cur.n += r.n; map.set(r.hour, cur);
-  });
-  return Array.from(map.entries()).map(([hour, v]) => ({ hour, pm25: v.sum / v.n, n: v.n })).sort((a, b) => a.hour - b.hour);
+/* Catatan cakupan & satuan kartu siklus 24 jam. */
+function diurnalNote() {
+  return state.range === 'hari' ? 'satu hari penuh' : 'garis putus-putus = rata-rata';
 }
 function renderTime() {
   const d = DATA.meta.data_quality;
   const meta = `${DATA.view.label} · ${d.stations} stasiun · data hingga ${DATA.meta.periods.data_end}`;
-  const sub = state.station ? `${state.station} · ${DATA.view.label}` : (state.island === 'Semua' ? 'Nasional' : state.island);
+  const sub = `${scopeLabel()} · ${DATA.view.label}`;
   const kpis = timeKpis().map(kpiCard2).join('');
   return `${pageHead('Waktu', meta, `<span class="pill">${esc(DATA.view.name)}</span>`)}
   <div class="page-body">
@@ -2564,12 +2497,12 @@ function renderTime() {
       ${card('Perubahan PM2.5 harian', 'µg/m³', `<div class="chart" id="chart-daily"></div>`, { cls: 'span-12 h-460', right: '<div class="card-sub">µg/m³ · garis 15 / 55 / 100</div>', period: state.range === 'hari' ? `${daySpan(shiftIso(state.date, -14), shiftIso(state.date, 7))} hari sekitar ${shortDate(state.date)}` : 'full' })}
     </div>
     <div class="grid-12">
-      ${card('Kalender harian', `PM2.5 · ${sub}`, `<div class="chart" id="chart-heat"></div>`, { cls: 'span-7 h-340', right: `<div class="heat-legend" id="legend-heat"></div>`, period: `PM2.5 · ${sub} · ${periodText('full')}` })}
-      ${card('Jam × hari', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-hour-dow"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">µg/m³ · jam × DOW</div>', period: 'full' })}
+      ${card('Siklus 24 jam', `µg/m³ · per jam · ${scopeLabel()} + tiap kelas lokasi`, `<div class="chart" id="chart-time-cycle"></div>`, { cls: 'span-8 h-320', right: `<div class="card-sub">${esc(diurnalNote())} · klik untuk rincian</div>`, period: 'range' })}
+      ${card('Bulanan per pulau', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-month-island"></div>`, { cls: 'span-4 h-320', right: '<div class="card-sub">µg/m³ · garis 55</div>', period: 'full' })}
     </div>
     <div class="grid-12">
-      ${card('Siklus 24 jam per kelas lokasi', 'indeks % · 100 = rata-rata', `<div class="chart" id="chart-diurnal-class"></div>`, { cls: 'span-6 h-280', right: `<div class="card-sub">${esc(diurnalClassLabel())}</div>` })}
-      ${card('Bulanan per pulau', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-month-island"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>', period: 'full' })}
+      ${card('Kalender harian', `PM2.5 · ${sub}`, `<div class="chart" id="chart-heat"></div>`, { cls: 'span-7 h-340', right: `<div class="heat-legend" id="legend-heat"></div>`, period: `PM2.5 · ${sub} · ${periodText('full')}` })}
+      ${card('Jam × hari', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-hour-dow"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">µg/m³ · jam × hari</div>', period: 'full' })}
     </div>
     <div class="grid-12">
       ${card('Episode per bulan', 'hari-stasiun >55 · 2024–2026', `<div class="chart" id="chart-episode-month"></div>`, { cls: 'span-7 h-280', right: '<div class="card-sub">hari-stasiun >55</div>', period: 'full' })}
@@ -2584,7 +2517,7 @@ function renderTime() {
 function afterTime() {
   makeHeatmap();
   makeHourDowChart();
-  makeDiurnalClassChart();
+  makeCycleChart('chart-time-cycle', { detail: true });
   makeMonthIslandChart();
   makeEpisodeMonthChart();
   makeWeekdayChart();
@@ -2623,90 +2556,6 @@ function makeHourDowChart() {
       const spec = detailHourDow(hour, dow);
       if (spec) openDetail(spec);
     }
-  });
-  return chart;
-}
-/* Indeks siklus 24 jam per kelas lokasi, mengikuti rentang & pulau aktif.
-   Sumber: matriks hourly per (cakupan, kelas) di data/hourly.json.
-   Indeks 100 = rata-rata jam tersebut pada rentang terpilih. */
-function classDiurnalSeries() {
-  const hourly = DATA.hourly || {};
-  const dates = hourly.dates || [];
-  const classScopes = hourly.class_scopes || {};
-  const scope = state.island === 'Semua' ? 'Nasional' : state.island;
-  const perClass = (scope && classScopes[scope]) || null;
-  const out = [];
-  if (perClass) {
-    const [from, to] = rangeBounds();
-    Object.keys(perClass).forEach((cls) => {
-      const mat = perClass[cls];
-      const sums = new Array(24).fill(0);
-      const counts = new Array(24).fill(0);
-      for (let i = 0; i < dates.length; i += 1) {
-        const d = dates[i];
-        if (d < from || d > to) continue;
-        const row = mat[i];
-        if (!row) continue;
-        for (let h = 0; h < 24; h += 1) {
-          const v = row[h];
-          if (v == null) continue;
-          sums[h] += v;
-          counts[h] += 1;
-        }
-      }
-      const means = sums.map((s, h) => (counts[h] ? s / counts[h] : null));
-      const valid = means.filter((v) => v != null);
-      if (!valid.length) return;
-      const overall = valid.reduce((a, b) => a + b, 0) / valid.length;
-      if (!overall) return;
-      out.push({ cls, values: means.map((v) => (v == null ? null : Math.round(v / overall * 1000) / 10)) });
-    });
-  }
-  if (!out.length) {
-    const fallback = DATA.time.diurnal_class || {};
-    Object.keys(fallback).forEach((cls) => {
-      out.push({
-        cls,
-        values: Array.from({ length: 24 }, (_, h) => {
-          const v = fallback[cls][String(h)];
-          return v == null ? null : Number(v);
-        }),
-      });
-    });
-  }
-  return out;
-}
-/* Label kartu siklus kelas: mengikuti rentang aktif (indeks dihitung dari
-   matriks hourly kelas pada cakupan pulau/nasional terpilih). */
-function diurnalClassLabel() {
-  return `${DATA.view.label} · indeks 100 = rata-rata`;
-}
-function makeDiurnalClassChart() {
-  const series = classDiurnalSeries();
-  const hours = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
-  const all = series.flatMap((s) => s.values).filter((v) => v != null);
-  const lo = all.length ? Math.min(...all) : 75;
-  const hi = all.length ? Math.max(...all) : 140;
-  const yMin = Math.min(75, Math.floor((lo - 4) / 5) * 5);
-  const yMax = Math.max(140, Math.ceil((hi + 4) / 5) * 5);
-  const chart = makeChart('chart-diurnal-class', {
-    aria: { enabled: true },
-    grid: { left: 40, right: 12, top: 30, bottom: 26 },
-    legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 7, textStyle: { fontSize: 8, color: C.muted } },
-    tooltip: { ...tooltipBase(), trigger: 'axis' },
-    xAxis: { type: 'category', data: hours, axisLabel: { color: C.muted, fontSize: 8, interval: 2 }, axisTick: { show: false } },
-    yAxis: { type: 'value', min: yMin, max: yMax, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8, formatter: '{value}%' } },
-    series: series.map((s, si) => ({ name: s.cls, type: 'line', data: s.values, smooth: false, symbol: 'none', lineStyle: { width: 1.6, color: DIURNAL_COLORS[s.cls] || C.navy }, itemStyle: { color: DIURNAL_COLORS[s.cls] || C.navy }, markLine: si === 0 ? { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: C.muted, width: 1 }, data: [{ yAxis: 100 }] } : undefined })),
-  });
-  pickByPixel(chart, document.getElementById('chart-diurnal-class'), 'x', (hour, yVal) => {
-    let best = null;
-    series.forEach((s) => {
-      const v = Number(s.values[hour]);
-      if (!Number.isFinite(v)) return;
-      const d = Math.abs(v - yVal);
-      if (!best || d < best.d) best = { cls: s.cls, d };
-    });
-    if (best) openDetail(detailDiurnalClass(best.cls));
   });
   return chart;
 }
@@ -2903,39 +2752,6 @@ function makeEpisodeChart() {
   return chart;
 }
 
-function makeDiurnalChart() {
-  const rows = Object.entries(DATA.time.diurnal).map(([h, v]) => [String(h).padStart(2, '0'), v]);
-  const chart = makeChart('chart-time', {
-    aria: { enabled: true },
-    grid: { left: 40, right: 16, top: 26, bottom: 28 },
-    tooltip: { ...tooltipBase(), trigger: 'axis', formatter: (ps) => `<b>${ps[0].axisValue}:00</b><br>${fmt(ps[0].value, 1)}%` },
-    xAxis: { type: 'category', data: rows.map((r) => r[0]), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 8.5, interval: 1 } },
-    yAxis: { type: 'value', min: 80, max: 140, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 9, formatter: '{value}%' } },
-    series: [{
-      type: 'line',
-      data: rows.map((r) => r[1]),
-      smooth: false,
-      symbol: 'circle',
-      symbolSize: 3,
-      lineStyle: { width: 2, color: C.navy },
-      itemStyle: { color: C.navy },
-      areaStyle: { color: 'rgba(231,179,58,.16)' },
-      markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: C.muted, width: 1 }, data: [{ yAxis: 100 }] },
-      markPoint: {
-        symbol: 'circle',
-        symbolSize: 7,
-        itemStyle: { color: C.yellow, borderColor: C.navy, borderWidth: 1.5 },
-        label: { show: true, position: 'top', distance: 6, fontFamily: 'IBM Plex Mono', fontSize: 9, color: C.navy, formatter: (p) => `${fmt(p.value, 1)}%` },
-        data: [
-          { coord: ['07', DATA.time.diurnal['7']], value: DATA.time.diurnal['7'] },
-          { coord: ['18', DATA.time.diurnal['18']], value: DATA.time.diurnal['18'] },
-        ],
-      },
-    }],
-  });
-  return chart;
-}
-
 function makeWeekdayChart() {
   const rows = DATA.time.weekday;
   const chart = makeChart('chart-weekday', {
@@ -2977,7 +2793,7 @@ function renderGeo() {
         <div class="card-body"><div class="map" id="map-geo"></div><div class="map-legend" id="legend-geo"></div></div>
       </section>
       <section class="card span-5 h-420">
-        <div class="card-head"><div class="card-title">Profil stasiun</div><div class="card-head-right">${st ? `<button class="ghost-btn" type="button" data-action="export-station">CSV</button><button class="ghost-btn" type="button" data-action="compare-station">Bandingkan</button>` : ''}<div class="card-sub">${st ? 'klik titik lain' : 'pilih stasiun'}</div><div class="card-sub period">${esc(DATA.view.label)}</div></div></div>
+        <div class="card-head"><div class="card-title">Profil stasiun</div><div class="card-head-right">${st ? `<button class="ghost-btn" type="button" data-action="compare-station">Bandingkan</button>` : ''}<div class="card-sub">${st ? 'klik titik lain' : 'pilih stasiun'}</div><div class="card-sub period">${esc(DATA.view.label)}</div></div></div>
         <div class="card-body" id="profile-body">${renderProfile(st)}</div>
       </section>
     </div>
@@ -3000,7 +2816,6 @@ function renderGeoTable() {
         <div class="card-sub">${esc(DATA.view.label)}</div>
         <input class="method-search" id="geo-table-search" type="search" placeholder="Cari stasiun/kota" value="${esc(state.tableSearch)}" aria-label="Cari stasiun">
         <label class="filter-group"><span class="filter-label">Urut</span><select class="select" id="geo-table-sort">${['mean','p95','usable','name'].map((k) => `<option value="${k}" ${state.tableSort === k ? 'selected' : ''}>${({mean:'Rata-rata',p95:'P95',usable:'Kelayakan',name:'Nama'})[k]}</option>`).join('')}</select></label>
-        <button class="ghost-btn" type="button" data-action="download-overview">CSV</button>
       </div>
     </div>
     <div class="card-body"><div class="table-wrap" style="height:auto;max-height:360px"><table class="data" id="geo-table"></table></div></div>
@@ -3288,11 +3103,6 @@ function usableLegend() {
   return `<div class="row"><span class="sw" style="background:${C.teal}"></span>≥95%</div><div class="row"><span class="sw" style="background:${C.yellow}"></span>80–95%</div><div class="row"><span class="sw" style="background:${C.terra}"></span>&lt;80%</div>`;
 }
 
-function exportStation() {
-  const st = state.station ? DATA.stationsById.get(state.station) : null;
-  if (!st) return;
-  downloadCSV(`napas_${st.id}.csv`, [['metric', 'value', 'unit', 'rentang'], ['pm25_acuan', st.day_value, 'µg/m³', shortDate(state.date)], ['rata_rata', st.mean_2026, 'µg/m³', DATA.view.label], ['p95', st.p95_2026, 'µg/m³', DATA.view.label], ['maksimum', st.max_2026, 'µg/m³', DATA.view.label], ['hari', st.days_2026, 'hari', DATA.view.label], ['hari_layak_pct', st.usable_pct, '%', '2024–2026'], ['baseline', st.baseline, 'µg/m³', 'situs'], ['lalu_lintas', st.traffic, '/jam', 'situs'], ['jarak_jalan', st.distance, 'm', 'situs']]);
-}
 
 /* ------------------------------------------------------------------ sources */
 function sourceRows() {
@@ -3330,17 +3140,24 @@ function renderSource() {
   };
   const corrDisplay = corr;
   const pmCorr = DATA.sources.pollutant_matrix ? DATA.sources.pollutant_matrix.matrix[0][1] : null;
-  const windNeg = (DATA.sources.meteo_corr || []).filter((r) => r.wind != null && r.wind < 0).length;
+  const scopeNote = state.station ? `${scopeLabel()} · korelasi skala ${state.island === 'Semua' ? 'nasional' : state.island}` : `${scopeLabel()}`;
   const kpis = [
-    { id: 'cb', label: 'r baseline', value: corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : '—', unit: '', baseline: corrDisplay.baseline ? `n=${corrDisplay.baseline.n}` : '', window: DATA.view.name, note: `Pearson baseline vs rata-rata PM2.5 · ${DATA.view.label}` },
-    { id: 'cd', label: 'r jarak jalan', value: corrDisplay.distance ? fmtR(corrDisplay.distance.r) : '—', unit: '', baseline: corrDisplay.distance ? `n=${corrDisplay.distance.n}` : '', window: 'm', note: 'Pearson jarak ke jalan vs rata-rata PM2.5; semakin jauh → cenderung lebih rendah' },
-    { id: 'ct', label: 'r lalu lintas', value: corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : '—', unit: '', baseline: corrDisplay.traffic ? `n=${corrDisplay.traffic.n}` : '', window: '/jam', note: 'Pearson volume lalu lintas vs rata-rata PM2.5' },
-    { id: 'pm', label: 'r PM2.5–PM10', value: pmCorr == null ? '—' : fmtR(pmCorr), unit: '', baseline: DATA.sources.pollutant_matrix ? `n=${fmtInt(DATA.sources.pollutant_matrix.n)} hari-stasiun` : '', window: '2024–2026', note: 'Korelasi pooled hari-stasiun PM2.5 vs PM10 · seluruh periode' },
+    { id: 'cb', label: 'Nilai Korelasi baseline', value: corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : '—', unit: '', baseline: corrDisplay.baseline ? `n=${corrDisplay.baseline.n}` : '', window: DATA.view.name, note: `Pearson baseline vs rata-rata PM2.5 · ${scopeNote}`,
+      tip: [['Definisi', 'Korelasi Pearson baseline situs vs rata-rata PM2.5 tiap stasiun'], ['Cakupan', scopeNote], ['Rentang', DATA.view.label], ['Sifat', 'Asosiatif, bukan kausal']] },
+    { id: 'cd', label: 'Nilai Korelasi jarak jalan', value: corrDisplay.distance ? fmtR(corrDisplay.distance.r) : '—', unit: '', baseline: corrDisplay.distance ? `n=${corrDisplay.distance.n}` : '', window: 'm', note: `Pearson jarak ke jalan vs rata-rata PM2.5; semakin jauh → cenderung lebih rendah · ${scopeNote}`,
+      tip: [['Definisi', 'Korelasi Pearson jarak ke jalan (meter) vs rata-rata PM2.5 tiap stasiun'], ['Cakupan', scopeNote], ['Arah', 'Negatif = makin jauh makin rendah'], ['Sifat', 'Asosiatif, bukan kausal']] },
+    { id: 'ct', label: 'Nilai Korelasi lalu lintas', value: corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : '—', unit: '', baseline: corrDisplay.traffic ? `n=${corrDisplay.traffic.n}` : '', window: '/jam', note: `Pearson volume lalu lintas vs rata-rata PM2.5 · ${scopeNote}`,
+      tip: [['Definisi', 'Korelasi Pearson volume kendaraan/jam vs rata-rata PM2.5 tiap stasiun'], ['Cakupan', scopeNote], ['Rentang', DATA.view.label], ['Sifat', 'Asosiatif, bukan kausal']] },
+    { id: 'pm', label: 'Nilai Korelasi PM2.5–PM10', value: pmCorr == null ? '—' : fmtR(pmCorr), unit: '', baseline: DATA.sources.pollutant_matrix ? `n=${fmtInt(DATA.sources.pollutant_matrix.n)} hari-stasiun` : '', window: '2024–2026', note: 'Korelasi pooled hari-stasiun PM2.5 vs PM10 · seluruh periode',
+      tip: [['Definisi', 'Korelasi Pearson PM2.5 vs PM10 pada tingkat hari-stasiun'], ['Cakupan', 'Seluruh periode 2024–2026'], ['Sifat', 'Asosiatif, bukan kausal']] },
   ].map(kpiCard2).join('');
-  const pollutants = DATA.sources.pollutants;
+  const scopeMeans = sourceScopeMeans();
+  const pollutants = scopeMeans.pollutants;
+  const meteoMeans = scopeMeans.meteo;
   const windStations = filteredSourceStations();
-  const windOptions = windStations.map((s) => `<option ${s === (state.windStation || 'PLB-01') ? 'selected' : ''}>${s}</option>`).join('');
-  return `${pageHead('Sumber', `${DATA.view.label} · korelasi tingkat stasiun · asosiasi, bukan kausal`, `<span class="badge est" data-tip="Korelasi Pearson pada tingkat stasiun; bukan klaim kausal">Asosiasi, bukan kausal</span><button class="ghost-btn" type="button" data-action="download-source">Unduh CSV</button>`)}
+  const windDefault = (windStations.includes(state.station) ? state.station : (windStations.includes(state.windStation) ? state.windStation : windStations[0])) || '';
+  const windOptions = windStations.map((s) => `<option ${s === windDefault ? 'selected' : ''}>${s}</option>`).join('');
+  return `${pageHead('Sumber', `${DATA.view.label} · korelasi tingkat stasiun · asosiasi, bukan kausal`, `<span class="badge est" data-tip="Korelasi Pearson pada tingkat stasiun; bukan klaim kausal">Asosiasi, bukan kausal</span>`)}
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="grid-12">
@@ -3349,23 +3166,23 @@ function renderSource() {
       ${card('Lalu lintas vs PM2.5', `X kendaraan/jam · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-traffic"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : ''} · garis 55</div>`, period: 'range' })}
     </div>
     <div class="grid-12">
-      ${card('Matriks korelasi polutan', 'Pearson · pooled hari-stasiun · 2024–2026', `<div class="chart" id="chart-pollutant-matrix"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">PM2.5 · PM10 · SO2 · NO2 · O3 · CO</div>', period: 'full' })}
+      ${card('Korelasi polutan × meteorologi', `nilai korelasi · ${scopeNote}`, `<div class="chart" id="chart-meteo-corr"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">klik sel untuk rincian</div>', period: 'range' })}
       <section class="card span-6 h-340">
-        <div class="card-head"><div class="card-title">Rata-rata polutan</div><div class="card-head-right"><div class="card-sub">${esc(DATA.view.label)}</div></div></div>
+        <div class="card-head"><div class="card-title">Rata-rata polutan</div><div class="card-head-right"><div class="card-sub">${esc(scopeNote)}</div><div class="card-sub period">${esc(periodText('range'))}</div></div></div>
         <div class="card-body"><div class="stat-grid">${pollutants.map((r) => `<div class="stat-block"><div class="k">${esc(r.label)}</div><div class="v">${fmt(r.value, 1)} <small>${esc(r.unit)}</small></div><div class="n">n = ${fmtInt(r.n)}</div></div>`).join('')}</div></div>
       </section>
     </div>
     <div class="grid-12">
+      ${card('Matriks korelasi polutan', 'Pearson · pooled hari-stasiun · 2024–2026', `<div class="chart" id="chart-pollutant-matrix"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">PM2.5 · PM10 · SO2 · NO2 · O3 · CO</div>', period: 'full' })}
       <section class="card span-6 h-340">
         <div class="card-head"><div class="card-title">Arah angin</div><div class="card-head-right"><label class="filter-group"><span class="filter-label">Stasiun</span><select class="select" id="wind-station">${windOptions}</select></label><div class="card-sub">16 sektor · 5 kelas</div><div class="card-sub period">${esc(periodText('full'))}</div></div></div>
         <div class="card-body"><div class="chart" id="chart-windrose"></div></div>
       </section>
-      ${card('Korelasi meteorologi', 'r jam-jaman · per stasiun', `<div class="table-wrap" style="height:auto;max-height:340px"><table class="data" id="meteo-table"></table></div>`, { cls: 'span-6 h-auto', right: '<div class="card-sub">r = PM2.5 vs suhu/kelembapan/angin</div>', period: 'full' })}
     </div>
     <div class="grid-12">
       <section class="card span-12 h-auto">
-        <div class="card-head"><div class="card-title">Meteorologi</div><div class="card-head-right"><div class="card-sub">rata-rata · ${esc(DATA.view.label)}</div></div></div>
-        <div class="card-body"><div class="stat-grid">${(DATA.sources.meteo || []).map((r) => `<div class="stat-block"><div class="k">${esc(r.label)}</div><div class="v">${fmt(r.value, 1)} <small>${esc(r.unit)}</small></div><div class="n">n = ${fmtInt(r.n)}</div></div>`).join('')}</div></div>
+        <div class="card-head"><div class="card-title">Meteorologi</div><div class="card-head-right"><div class="card-sub">rata-rata · ${esc(scopeNote)}</div><div class="card-sub period">${esc(periodText('range'))}</div></div></div>
+        <div class="card-body"><div class="stat-grid">${meteoMeans.map((r) => `<div class="stat-block"><div class="k">${esc(r.label)}</div><div class="v">${fmt(r.value, 1)} <small>${esc(r.unit)}</small></div><div class="n">n = ${fmtInt(r.n)}</div></div>`).join('')}</div></div>
       </section>
     </div>
   </div>`;
@@ -3375,6 +3192,51 @@ function filteredSourceStations() {
   return rows.filter((r) => state.island === 'Semua' || r.island === state.island).map((r) => r.station);
 }
 
+/* Stasiun acuan wind rose: ikut filter stasiun bila ada, kalau tidak pilihan terakhir. */
+function windStationId() {
+  const list = filteredSourceStations();
+  if (state.station && list.includes(state.station)) return state.station;
+  if (state.windStation && list.includes(state.windStation)) return state.windStation;
+  return list[0] || null;
+}
+
+/* Rata-rata polutan & meteorologi untuk cakupan aktif (stasiun bila dipilih,
+   kalau tidak pulau/nasional) pada rentang aktif. Semua dari data/*.json. */
+function sourceScopeMeans() {
+  const keys = (DATA.pollutants && DATA.pollutants.keys) || [];
+  const [from, to] = rangeBounds();
+  const ids = state.station ? [state.station] : filteredSourceStations();
+  const acc = {};
+  keys.forEach((k) => { acc[k] = { s: 0, n: 0 }; });
+  let pmSum = 0;
+  let pmN = 0;
+  ids.forEach((id) => {
+    const rows = (DATA.pollutants.stations || {})[id] || [];
+    const dayIdx = DATA.stationDayIndex ? DATA.stationDayIndex[id] : null;
+    rows.forEach((r) => {
+      if (r[0] < from || r[0] > to) return;
+      keys.forEach((k, i) => {
+        const v = r[i + 1];
+        if (v == null) return;
+        acc[k].s += v;
+        acc[k].n += 1;
+      });
+      const pm = dayIdx ? dayIdx.get(r[0]) : null;
+      if (pm != null) { pmSum += pm; pmN += 1; }
+    });
+  });
+  const val = (k) => (acc[k] && acc[k].n ? round1(acc[k].s / acc[k].n) : null);
+  return {
+    pollutants: (DATA.sources.pollutants || []).map((p) => ({
+      ...p,
+      value: p.key === 'pm25' ? (pmN ? round1(pmSum / pmN) : null) : val(p.key),
+      n: p.key === 'pm25' ? pmN : (acc[p.key] ? acc[p.key].n : 0),
+    })),
+    meteo: (DATA.sources.meteo || []).map((p) => ({ ...p, value: val(p.key), n: acc[p.key] ? acc[p.key].n : 0 })),
+    stations: ids.length,
+  };
+}
+
 function afterSource() {
   const rows = sourceRows();
   const yName = `PM2.5 ${DATA.view.label} (µg/m³)`;
@@ -3382,8 +3244,8 @@ function afterSource() {
   makeScatter('scatter-distance', rows, 'distance', true, 'Jarak ke jalan (m, log)', yName);
   makeScatter('scatter-traffic', rows, 'traffic', false, 'Lalu lintas (kendaraan/jam)', yName);
   makePollutantMatrix();
+  makeMeteoCorrChart();
   makeWindrose();
-  renderMeteoTable();
   const windSel = $('#wind-station');
   if (windSel) windSel.addEventListener('change', () => { state.windStation = windSel.value; makeWindrose(); });
 }
@@ -3412,8 +3274,8 @@ function makePollutantMatrix() {
   return chart;
 }
 function makeWindrose() {
-  const id = state.windStation || 'PLB-01';
-  const w = DATA.sources.windrose[id];
+  const id = windStationId();
+  const w = id ? DATA.sources.windrose[id] : null;
   if (!w) return null;
   const dirs = ['U', 'UTL', 'TL', 'TTL', 'T', 'TTR', 'TGR', 'TS', 'S', 'SB', 'STB', 'ST', 'B', 'BB', 'BBL', 'BS'];
   const speedLabels = ['0–0,5', '0,5–1,5', '1,5–3,3', '3,3–5,5', '>5,5'];
@@ -3439,12 +3301,167 @@ function makeWindrose() {
   return chart;
 }
 
-function renderMeteoTable() {
-  const el = $('#meteo-table');
-  if (!el) return;
-  const rows = (DATA.sources.meteo_corr || []).filter((r) => r.station !== 'JMB-02' && (state.island === 'Semua' || r.island === state.island)).slice().sort((a, b) => (Math.abs(b.wind || 0) - Math.abs(a.wind || 0)));
-  el.innerHTML = `<thead><tr><th>Stasiun</th><th>Pulau</th><th class="num">r suhu</th><th class="num">r kelembapan</th><th class="num">r angin</th><th class="num">n jam</th></tr></thead><tbody>${rows.map((r) => `<tr data-meteo="${esc(r.station)}" tabindex="0"><td class="mono">${esc(r.station)}</td><td>${esc(r.island || '')}</td><td class="num">${r.temp == null ? '—' : fmtR(r.temp)}</td><td class="num">${r.hum == null ? '—' : fmtR(r.hum)}</td><td class="num">${r.wind == null ? '—' : fmtR(r.wind)}</td><td class="num">${fmtInt(r.n)}</td></tr>`).join('')}</tbody>`;
-  bindRowActivate('#meteo-table tbody tr', 'data-meteo', detailMeteo);
+/* Korelasi polutan × meteorologi — dihitung runtime dari data harian
+   (pollutants.json) sesuai filter pulau/stasiun + rentang aktif.
+   Tidak ada angka yang ditulis manual di HTML. */
+const METEO_FIELDS = [
+  { key: 'temp', label: 'Suhu' },
+  { key: 'hum', label: 'Kelembapan' },
+  { key: 'wind', label: 'Angin' },
+];
+const CORR_POLLUTANTS = [
+  { key: 'pm25', label: 'PM2.5' },
+  { key: 'pm10', label: 'PM10' },
+  { key: 'so2', label: 'SO2' },
+  { key: 'no2', label: 'NO2' },
+  { key: 'o3', label: 'O3' },
+  { key: 'co', label: 'CO' },
+];
+const METEO_MIN_N = 30;
+
+/* Pasangan (polutan, bidang meteo) → nilai korelasi + n, pada filter aktif.
+   PM2.5 diambil dari indeks harian stasiun (data/time.json → station_daily),
+   polutan lain & meteorologi dari data/pollutants.json. */
+function meteoCorrRows() {
+  const keys = (DATA.pollutants && DATA.pollutants.keys) || [];
+  const [from, to] = rangeBounds();
+  const ids = state.station ? [state.station] : filteredSourceStations();
+  const pols = CORR_POLLUTANTS.filter((p) => p.key === 'pm25' || keys.includes(p.key));
+  const pairs = pols
+    .flatMap((p) => METEO_FIELDS.map((m) => ({ pol: p, met: m, xs: [], ys: [], n: 0 })));
+
+  ids.forEach((id) => {
+    const rows = ((DATA.pollutants.stations || {})[id] || []);
+    const dayIdx = DATA.stationDayIndex ? DATA.stationDayIndex[id] : null;
+    rows.forEach((r) => {
+      if (r[0] < from || r[0] > to) return;
+      pols.forEach((p) => {
+        const y = p.key === 'pm25'
+          ? (dayIdx && dayIdx.has(r[0]) ? dayIdx.get(r[0]) : null)
+          : r[keys.indexOf(p.key) + 1];
+        if (y == null) return;
+        METEO_FIELDS.forEach((m) => {
+          const x = r[keys.indexOf(m.key) + 1];
+          if (x == null) return;
+          const pair = pairs.find((pp) => pp.pol.key === p.key && pp.met.key === m.key);
+          pair.xs.push(x);
+          pair.ys.push(y);
+          pair.n += 1;
+        });
+      });
+    });
+  });
+
+  return pairs.map((pair) => {
+    if (pair.n < METEO_MIN_N) return { pol: pair.pol, met: pair.met, r: null, n: pair.n };
+    const mx = pair.xs.reduce((a, b) => a + b, 0) / pair.n;
+    const my = pair.ys.reduce((a, b) => a + b, 0) / pair.n;
+    let num = 0; let dx = 0; let dy = 0;
+    for (let i = 0; i < pair.n; i += 1) {
+      const a = pair.xs[i] - mx;
+      const b = pair.ys[i] - my;
+      num += a * b; dx += a * a; dy += b * b;
+    }
+    const den = Math.sqrt(dx * dy);
+    return { pol: pair.pol, met: pair.met, r: den ? Math.round(num / den * 1000) / 1000 : null, n: pair.n };
+  });
+}
+
+function makeMeteoCorrChart() {
+  const rows = meteoCorrRows();
+  const usable = rows.filter((r) => r.r != null);
+
+  /* Tanpa nilai sama sekali (rentang 1 hari, atau stasiun tanpa baris polutan/meteo):
+     tampilkan keterangan, bukan grid "—" yang terbaca sebagai chart rusak. */
+  if (!usable.length) {
+    const el = document.getElementById('chart-meteo-corr');
+    if (el) {
+      const maxN = rows.reduce((m, r) => Math.max(m, r.n), 0);
+      el.innerHTML = `<div class="empty"><div>Tidak ada nilai korelasi pada rentang ini</div><div class="card-sub">${maxN ? `n maksimum ${fmtInt(maxN)} hari-stasiun` : 'stasiun ini tidak punya baris polutan/meteo'} · butuh ≥ ${METEO_MIN_N} per pasangan</div></div>`;
+    }
+    return null;
+  }
+
+  /* Skala warna mengikuti besaran data: korelasi satu stasiun jarang melewati ±0,2,
+     sehingga skala tetap -1..1 membuat semua sel nyaris sewarna latar. */
+  const maxAbs = Math.max(...usable.map((r) => Math.abs(r.r)));
+  const cap = Math.max(0.2, Math.ceil(maxAbs * 10) / 10);
+
+  const pols = CORR_POLLUTANTS.filter((p) => rows.some((r) => r.pol.key === p.key));
+  const data = [];
+  pols.forEach((p, pi) => {
+    METEO_FIELDS.forEach((m, mi) => {
+      const row = rows.find((r) => r.pol.key === p.key && r.met.key === m.key);
+      data.push({ value: [mi, pi, row && row.r != null ? row.r : null, row ? row.n : 0] });
+    });
+  });
+  const chart = makeChart('chart-meteo-corr', {
+    aria: { enabled: true },
+    grid: { left: 54, right: 16, top: 22, bottom: 24, containLabel: true },
+    tooltip: {
+      ...tooltipBase(),
+      formatter: (pp) => {
+        const v = pp.value;
+        const pol = pols[v[1]] ? pols[v[1]].label : '';
+        const met = METEO_FIELDS[v[0]] ? METEO_FIELDS[v[0]].label : '';
+        return `<b>${esc(pol)} vs ${esc(met)}</b><br>Nilai korelasi ${v[2] == null ? '—' : fmtR(v[2])}<br>n = ${fmtInt(v[3])} hari-stasiun<br><span style="opacity:.7">skala warna ±${fmt(cap, 1)}</span>`;
+      },
+    },
+    xAxis: { type: 'category', data: METEO_FIELDS.map((m) => m.label), axisLabel: { color: C.navy, fontSize: 9 }, axisTick: { show: false }, splitArea: { show: false } },
+    yAxis: { type: 'category', data: pols.map((p) => p.label), axisLabel: { color: C.navy, fontSize: 9 }, axisTick: { show: false }, inverse: true },
+    visualMap: { show: false, dimension: 2, min: -cap, max: cap, inRange: { color: ['#D9663F', '#F6F3EC', '#182048'] } },
+    series: [{
+      type: 'heatmap',
+      data,
+      itemStyle: { borderColor: C.paper, borderWidth: 1 },
+      label: {
+        show: true,
+        fontSize: 9,
+        fontFamily: 'IBM Plex Mono',
+        formatter: (pp) => (pp.value[2] == null ? '—' : fmt(pp.value[2], 2)),
+      },
+      emphasis: { itemStyle: { borderColor: C.navy, borderWidth: 1.4 } },
+    }],
+  });
+  if (chart) {
+    chart.off('click');
+    chart.on('click', (pp) => {
+      const v = pp.value || [];
+      const pol = pols[v[1]];
+      const met = METEO_FIELDS[v[0]];
+      if (!pol || !met) return;
+      const row = rows.find((r) => r.pol.key === pol.key && r.met.key === met.key);
+      if (!row) return;
+      const spec = detailMeteoPair(row);
+      if (spec) openDetail(spec);
+    });
+  }
+  return chart;
+}
+
+function detailMeteoPair(row) {
+  const strength = row.r == null ? '—' : Math.abs(row.r) >= 0.7 ? 'Kuat' : Math.abs(row.r) >= 0.4 ? 'Sedang' : 'Lemah';
+  const direction = row.r == null ? '—' : row.r < 0 ? 'Berlawanan arah' : 'Searah';
+  const body = `
+    ${detailMetrics([
+      ['Nilai korelasi', row.r == null ? '—' : fmtR(row.r), ''],
+      ['Kekuatan', strength, ''],
+      ['Observasi', fmtInt(row.n), 'hari-stasiun'],
+    ])}
+    <div class="detail-list">
+      <div class="row"><span>Arah hubungan</span><b>${esc(direction)}</b></div>
+      <div class="row"><span>Polutan</span><b>${esc(row.pol.label)}</b></div>
+      <div class="row"><span>Meteorologi</span><b>${esc(row.met.label)}</b></div>
+      <div class="row"><span>Rentang</span><b>${esc(DATA.view.label)}</b></div>
+    </div>
+    <div class="detail-note">Rata-rata harian per stasiun · asosiasi, bukan sebab-akibat</div>`;
+  return {
+    key: `meteo:${row.pol.key}:${row.met.key}`,
+    kicker: 'Korelasi polutan × meteorologi',
+    title: `${row.pol.label} vs ${row.met.label}`,
+    chip: row.pol.label,
+    body,
+  };
 }
 
 function makeScatter(id, rows, xKey, logX, xName = xKey, yName = 'PM2.5 2026 (µg/m³)') {
@@ -3462,6 +3479,21 @@ function makeScatter(id, rows, xKey, logX, xName = xKey, yName = 'PM2.5 2026 (µ
   const lx0 = logX ? Math.pow(10, xmin) : xmin;
   const lx1 = logX ? Math.pow(10, xmax) : xmax;
   const line = [[lx0, a + b * xmin], [lx1, a + b * xmax]];
+  // Style per-titik dihitung di sini: callback itemStyle.borderColor/borderWidth/opacity
+  // tidak dievaluasi oleh build ECharts yang dipakai (titik jadi tak ter-render).
+  const scatterData = pts.map((v) => {
+    const sel = !!state.station && v[3] === state.station;
+    return {
+      value: v,
+      symbolSize: sel ? 13 : 5 + Math.min(9, Math.sqrt(v[6] || v[2]) / 3.5),
+      itemStyle: {
+        color: ISLAND_COLORS[v[5]] || C.navy,
+        borderColor: sel ? C.navy : C.paper,
+        borderWidth: sel ? 2 : 1,
+        opacity: state.station && !sel ? 0.42 : 1,
+      },
+    };
+  });
   const chart = makeChart(id, {
     aria: { enabled: true },
     grid: { left: 52, right: 14, top: 18, bottom: 38 },
@@ -3498,11 +3530,19 @@ function makeScatter(id, rows, xKey, logX, xName = xKey, yName = 'PM2.5 2026 (µ
     series: [
       {
         type: 'scatter',
-        data: pts,
-        symbolSize: (v) => 5 + Math.min(9, Math.sqrt(v[6] || v[2]) / 3.5),
-        itemStyle: { color: (p) => ISLAND_COLORS[p.value[5]] || C.navy, borderColor: C.paper, borderWidth: 1 },
-        emphasis: { itemStyle: { color: C.yellow, borderColor: C.navy } },
-        label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, distance: 4, formatter: (p) => (p.value[1] > 250 || p.value[0] > 400 || p.value[3] === 'KTG-02' || p.value[3] === 'KTG-01' || p.value[3] === 'SM2-01') ? p.value[3] : '' },
+        data: scatterData,
+        emphasis: { itemStyle: { color: C.yellow, borderColor: C.navy }, label: { show: true } },
+        label: {
+          show: true,
+          position: 'top',
+          fontSize: 7.5,
+          color: C.muted,
+          distance: 4,
+          formatter: (p) => {
+            if (p.value[3] === state.station) return p.value[3];
+            return (p.value[1] > 250 || p.value[0] > 400 || p.value[3] === 'KTG-02' || p.value[3] === 'KTG-01' || p.value[3] === 'SM2-01') ? p.value[3] : '';
+          },
+        },
         labelLayout: { hideOverlap: true },
         // Label garis PP dilepas dari kanvas (crowded 15 label stasiun);
         // keterangan ambang ada di header kartu.
@@ -3553,14 +3593,14 @@ function renderHealth() {
     { id: 'lag0', label: 'Asosiasi lag 0', value: lag0, unit: '', baseline: 'r anomali · hari sama', window: '2024–2026', note: 'Korelasi anomali PM2.5 dan kunjungan respirasi pada hari yang sama',
       tip: [['Definisi', 'Pearson anomali PM2.5 vs anomali kunjungan, hari sama'], ['Cakupan', '2024–2026 · minimal 30 hari tumpang tindih'], ['Rentang', '−1 sampai +1'], ['Sifat', 'Asosiatif, bukan kausal']] },
   ].map((k) => ({ ...k, value: k.id === 'lag0' ? fmtR(k.value) : k.id === 'total' ? fmtInt(k.value) : fmt(k.value, 1) })).map(kpiCard2).join('');
-  return `${pageHead('Kesehatan', meta, `<span class="badge est" data-tip="Kunjungan rumah sakit yang tercatat. Bukan estimasi kasus akibat PM2.5.">Kunjungan aktual</span><button class="ghost-btn" type="button" data-action="download-health">Unduh CSV</button>`)}
+  return `${pageHead('Kesehatan', meta, `<span class="badge est" data-tip="Kunjungan rumah sakit yang tercatat. Bukan estimasi kasus akibat PM2.5.">Kunjungan aktual</span>`)}
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="rs-strip">
-      <span><b>${fmtInt(hospitalMeta.count)}</b> rumah sakit mitra</span>
-      <span><b>${fmtInt(hospitalMeta.beds_total)}</b> tempat tidur</span>
-      <span><b>${fmt(hospitalMeta.count / Math.max(1, stationPerHospital), 0)}</b> RS per stasiun</span>
-      <span class="rs-strip-note">${esc(DATA.view.label)} · ${y.days} hari</span>
+      <span class="status-chip"><b>${fmtInt(hospitalMeta.count)}</b> rumah sakit mitra</span>
+      <span class="status-chip"><b>${fmtInt(hospitalMeta.beds_total)}</b> tempat tidur</span>
+      <span class="status-chip"><b>${fmt(hospitalMeta.count / Math.max(1, stationPerHospital), 0)}</b> RS per stasiun</span>
+      <span class="status-chip total">${esc(DATA.view.label)} · <b>${fmtInt(y.days)}</b> hari</span>
     </div>
     <div class="grid-12">
       ${card('Kunjungan per kategori', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual</div>', period: 'range' })}
@@ -3909,7 +3949,7 @@ function renderNetwork() {
   const qcTotal = Object.values(qc).reduce((a, v) => a + v, 0) || 1;
   const qcLegend = Object.entries(qc).map(([k, v]) => `<span class="item"><span class="sw" style="background:${QC_COLOR[k] || C.grey}"></span>${qcLabel(k)} ${fmt(v / qcTotal * 100, 1)}%</span>`).join('');
   const exclusions = DATA.network.exclusions || {};
-  return `${pageHead('Jaringan', meta, `<span class="pill warning" data-tip="${esc(DATA.network.blind_spots.join(' · '))}">${DATA.network.blind_spots.length} wilayah tanpa stasiun</span><button class="ghost-btn" type="button" data-action="download-network">Unduh CSV</button>`)}
+  return `${pageHead('Jaringan', meta, `<span class="pill warning" data-tip="${esc(DATA.network.blind_spots.join(' · '))}">${DATA.network.blind_spots.length} wilayah tanpa stasiun</span>`)}
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="network-strip">${strip}<span class="status-chip total">Total <b>${rows.length}</b></span></div>
@@ -3918,7 +3958,7 @@ function renderNetwork() {
         <div class="card-head"><div class="card-title">Peta status</div><div class="card-head-right"><div class="card-sub">status stasiun</div><div class="card-sub period">${esc(periodText('full'))}</div></div></div>
         <div class="card-body"><div class="map" id="map-network"></div><div class="map-legend" id="legend-network"></div></div>
       </section>
-      ${card('Hasil pemeriksaan data', 'proporsi baris', `<div class="chart" id="chart-qc"></div>` + `<div class="stack-legend">${qcLegend}</div>`, { cls: 'span-6 h-320', right: '<div class="card-sub">667.981 baris</div>', period: 'full' })}
+      ${card('Hasil pemeriksaan data', 'proporsi baris', `<div class="chart" id="chart-qc"></div>` + `<div class="stack-legend">${qcLegend}</div>`, { cls: 'span-6 h-320', right: `<div class="card-sub">${fmtInt(qcTotal)} baris</div>`, period: 'full' })}
     </div>
     <div class="grid-12">
       <section class="card span-6 h-240">
@@ -3957,17 +3997,57 @@ function afterNetwork() {
   makePriorityChart(rows);
   renderNetworkTables();
 }
+/* Proporsi hasil pemeriksaan data sebagai donat; nama & warna ada di legenda bawah. */
 function makeQcChart() {
   const qc = DATA.network.qc_totals || {};
   const rows = Object.entries(qc).map(([key, value]) => ({ key, name: qcLabel(key), value }));
   const total = rows.reduce((a, r) => a + r.value, 0) || 1;
   const chart = makeChart('chart-qc', {
     aria: { enabled: true },
-    grid: { left: 8, right: 24, top: 8, bottom: 24, containLabel: true },
-    tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.name)}</b><br>${fmtInt(p.value)} baris · ${fmt(p.value / total * 100, 1)}%` },
-    xAxis: { type: 'value', max: 100, axisLabel: { color: C.muted, fontSize: 8.5, formatter: '{value}%' }, splitLine: { lineStyle: { color: C.grid } } },
-    yAxis: { type: 'category', inverse: true, data: rows.map((r) => r.name), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: 9 } },
-    series: [{ type: 'bar', data: rows.map((r) => ({ value: r.value / total * 100, itemStyle: { color: QC_COLOR[r.key] || C.grey, borderRadius: [0, 4, 4, 0] } })), barWidth: 14, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => fmt(p.value, 1) + '%' } }],
+    tooltip: {
+      ...tooltipBase(),
+      trigger: 'item',
+      formatter: (p) => `<b>${esc(p.name)}</b><br>${fmtInt(p.value)} baris · ${fmt(p.percent, 1)}%`,
+    },
+    series: [{
+      type: 'pie',
+      radius: ['52%', '76%'],
+      center: ['50%', '50%'],
+      avoidLabelOverlap: true,
+      minAngle: 3,
+      padAngle: 0.6,
+      itemStyle: { borderColor: C.paper, borderWidth: 1.5, borderRadius: 2 },
+      data: rows.map((r) => ({ name: r.name, value: r.value, itemStyle: { color: QC_COLOR[r.key] || C.grey } })),
+      /* Nama & warna tiap segmen ada di legenda bawah kartu; kanvas cukup
+         menampilkan total di tengah supaya label luar tidak bertumpuk. */
+      label: {
+        show: true,
+        position: 'inside',
+        fontFamily: 'IBM Plex Mono',
+        fontSize: 9,
+        color: '#FFFFFF',
+        formatter: (p) => (p.percent >= 8 ? `${fmt(p.percent, 1)}%` : ''),
+      },
+      labelLine: { show: false },
+      emphasis: {
+        scale: true,
+        scaleSize: 4,
+        label: { show: true, fontSize: 9 },
+      },
+    }],
+    graphic: [{
+      type: 'text',
+      left: 'center',
+      top: 'middle',
+      style: {
+        text: `${fmtInt(total)}\nbaris`,
+        textAlign: 'center',
+        fill: C.navy,
+        font: '600 11px "IBM Plex Mono", monospace',
+        lineHeight: 13,
+      },
+      silent: true,
+    }],
   });
   chart.on('click', (p) => {
     const r = rows[p.dataIndex];
@@ -4053,7 +4133,7 @@ function renderMethod() {
   const m = DATA.method;
   const d = m.data_quality;
   const meta = `metrics.json · ${m.metrics_sha256.slice(0, 12)}… · ${m.generated_at}`;
-  return `${pageHead('Metodologi', meta, `<input class="method-search" id="method-search" type="search" placeholder="Cari definisi" aria-label="Cari definisi"><button class="ghost-btn" type="button" data-action="download-metrics">metrics.json</button><button class="ghost-btn" type="button" data-action="download-stations">stations.json</button><button class="ghost-btn" type="button" data-action="download-daily">CSV harian</button>`)}
+  return `${pageHead('Metodologi', meta, `<input class="method-search" id="method-search" type="search" placeholder="Cari definisi" aria-label="Cari definisi">`)}
   <div class="page-body">
     <section class="card method-card">
       <div class="method-scroll" id="method-scroll">
@@ -4333,94 +4413,33 @@ function makeBarChart(id, rows, opts = {}) {
 
 /* ------------------------------------------------------- overview charts */
 
-function cycleSeries() {
-  const nat = DATA.time.diurnal || {};
-  const byClass = DATA.time.diurnal_class || {};
-  const hours = Array.from({ length: 24 }, (_, i) => String(i));
-  const pick = (src) => hours.map((h) => (src && src[h] != null ? Number(src[h]) : null));
-  return { hours, nat, natVals: pick(nat), road: pick(byClass['Traffic/Roadside']), peat: pick(byClass['Peatland/Forest']) };
-}
+/* Kurva 24 jam — satu pembangun untuk Ringkasan & Waktu.
+   Ringkasan: ringkas (lokasi terpilih + 2 pembanding).
+   Waktu: lebih rinci (lokasi terpilih + seluruh kelas lokasi + klik rincian).
+   Satuan µg/m³; garis putus-putus = rata-rata harian cakupan terpilih. */
+function makeCycleChart(id, opts = {}) {
+  const detail = !!opts.detail;
+  const curve = diurnalCurve();
+  const classes = diurnalClassCurves();
+  const mainColor = C.navy;
+  const series = [curve.means];
+  const allVals = curve.means.filter((v) => v != null);
 
-function makeDayHourChart(id) {
-  const rows = hourlySeries();
-  const vals = rows.map((r) => (r.pm25 == null ? null : r.pm25));
-  if (!vals.some((v) => v != null)) return null;
-  const ok = vals.filter((v) => v != null);
-  const hi = Math.max(...ok, 60);
-  const yMax = Math.ceil((hi + 10) / 20) * 20;
-  const peakIdx = vals.reduce((best, v, i) => (v != null && (best < 0 || v > vals[best]) ? i : best), -1);
-  const labels = rows.map((r) => String(r.hour).padStart(2, '0'));
-  const chart = makeChart(id, {
-    aria: { enabled: true },
-    grid: { left: 44, right: 16, top: 16, bottom: 22 },
-    tooltip: {
-      ...tooltipBase(),
-      trigger: 'axis',
-      formatter: (ps) => {
-        const h = ps[0].dataIndex;
-        return `<b>${labels[h]}:00</b><br>${vals[h] == null ? 'tidak ada data' : fmt(vals[h], 1) + ' µg/m³'}<br><span style="opacity:.7">${esc(shortDate(state.date))}</span>`;
-      },
-    },
-    xAxis: { type: 'category', data: labels, axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 8, interval: 3 } },
-    yAxis: { type: 'value', max: yMax, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
-    series: [{
-      type: 'line',
-      data: vals,
-      connectNulls: true,
-      showSymbol: false,
-      lineStyle: { color: C.navy, width: 2.2 },
-      areaStyle: { color: 'rgba(24,32,72,.07)' },
-      markLine: markLinePP(ppItem('y', 55, 'PP 55', C.yellow)),
-      markPoint: peakIdx >= 0 ? {
-        symbol: 'circle',
-        symbolSize: 7,
-        data: [{ coord: [labels[peakIdx], vals[peakIdx]], value: vals[peakIdx] }],
-        itemStyle: { color: C.terra, borderColor: '#fff', borderWidth: 1.4 },
-        label: { show: true, position: peakIdx >= 21 ? 'left' : 'top', distance: 5, fontFamily: 'IBM Plex Mono', fontSize: 8, fontWeight: 600, color: C.navy, backgroundColor: 'rgba(255,255,255,.82)', padding: [2, 3], borderRadius: 3, formatter: `${labels[peakIdx]}:00 · ${fmt(vals[peakIdx], 1)}` },
-      } : undefined,
-    }],
+  const compare = detail
+    ? classes
+    : classes.filter((c) => ['Traffic/Roadside', 'Peatland/Forest'].includes(c.cls));
+  compare.forEach((c) => {
+    series.push(c.vals);
+    c.vals.forEach((v) => { if (v != null) allVals.push(v); });
   });
-  return chart;
-}
+  if (!allVals.length) return null;
 
-function makeCycleChart(id) {
-  const { hours, natVals, road, peat } = cycleSeries();
-  if (!natVals.some((v) => v != null)) return null;
-  const all = [...natVals, ...road, ...peat].filter((v) => v != null);
-  const lo = Math.min(...all);
-  const hi = Math.max(...all);
-  const yMin = Math.max(50, Math.floor((lo - 6) / 10) * 10);
-  const yMax = Math.max(140, Math.ceil((hi + 6) / 10) * 10);
-  const labels = hours.map((h) => String(h).padStart(2, '0'));
-  const peak = (h) => {
-    const v = natVals[Number(h)];
-    if (v == null) return null;
-    const pagi = Number(h) < 12;
-    return {
-      coord: [labels[Number(h)], v],
-      value: v,
-      symbol: 'circle',
-      symbolSize: 6,
-      itemStyle: { color: pagi ? C.terra : C.navy, borderColor: '#fff', borderWidth: 1.4 },
-      label: {
-        show: true,
-        position: 'top',
-        offset: pagi ? [10, 0] : [-24, 0],
-        distance: 7,
-        formatter: `${pagi ? 'Puncak pagi' : 'Puncak sore'}\n${fmt(v, 1)}%`,
-        lineHeight: 11,
-        align: 'center',
-        fontFamily: 'IBM Plex Mono',
-        fontSize: 8,
-        fontWeight: 600,
-        color: C.navy,
-        backgroundColor: 'rgba(255,255,255,.82)',
-        padding: [2, 3],
-        borderRadius: 3,
-      },
-    };
-  };
-  const line = (name, data, color, dashed, z) => ({
+  const lo = Math.min(...allVals);
+  const hi = Math.max(...allVals);
+  const yMax = Math.ceil((hi + 6) / 10) * 10;
+  const yMin = Math.max(0, Math.floor((lo - 6) / 10) * 10);
+
+  const mk = (name, data, color, dashed, width) => ({
     name,
     type: 'line',
     data,
@@ -4428,31 +4447,58 @@ function makeCycleChart(id) {
     connectNulls: true,
     showSymbol: !dashed,
     symbol: 'circle',
-    symbolSize: 3.4,
-    lineStyle: { color, width: dashed ? 1.6 : 2.4, type: dashed ? [5, 4] : 'solid' },
-    itemStyle: { color, borderColor: '#fff', borderWidth: 1 },
-    z,
+    symbolSize: dashed ? 0 : 3.4,
+    lineStyle: { color, width, type: dashed ? [5, 4] : 'solid', opacity: dashed ? 0.9 : 1 },
+    itemStyle: { color, borderColor: C.paper, borderWidth: 1 },
+    z: dashed ? 2 : 4,
   });
+
+  const lines = [
+    mk(curve.label, curve.means, mainColor, false, 2.4),
+    ...compare.map((c) => mk(c.label, c.vals, DIURNAL_COLORS[c.cls] || C.grey, true, 1.5)),
+  ];
+
+  const dailyLine = curve.daily == null ? [] : [{
+    yAxis: curve.daily,
+    lineStyle: { color: mainColor, type: [2, 3], width: 1.1, opacity: 0.55 },
+    label: {
+      show: true,
+      position: 'insideStartTop',
+      formatter: `rata-rata ${fmt(curve.daily, 1)}`,
+      fontFamily: 'IBM Plex Mono',
+      fontSize: 8,
+      color: mainColor,
+      backgroundColor: 'rgba(255,255,255,.8)',
+      padding: [1, 3],
+      borderRadius: 3,
+    },
+  }];
+
   const chart = makeChart(id, {
     aria: { enabled: true },
-    grid: { left: 34, right: 12, top: 28, bottom: 22 },
-    legend: { top: 0, left: 0, itemWidth: 12, itemHeight: 7, itemGap: 10, icon: 'roundRect', textStyle: { fontSize: 9, color: C.muted } },
+    grid: { left: 40, right: 14, top: 32, bottom: 22 },
+    legend: { top: 0, left: 0, itemWidth: 12, itemHeight: 7, itemGap: 9, icon: 'roundRect', textStyle: { fontSize: 8.5, color: C.muted } },
     tooltip: {
       ...tooltipBase(),
       trigger: 'axis',
       axisPointer: { type: 'line', lineStyle: { color: 'rgba(24,32,72,.18)' } },
       formatter: (ps) => {
         const i = ps[0] ? ps[0].dataIndex : 0;
-        return `<b>${labels[i]}:00</b>` + ps.map((p) => `<br>${esc(p.seriesName)} <b>${fmt(p.value, 1)}%</b>`).join('');
+        const body = ps
+          .filter((p) => p.value != null)
+          .map((p) => `<br>${esc(p.seriesName)} <b>${fmt(p.value, 1)} µg/m³</b>`)
+          .join('');
+        const foot = `<br><span style="opacity:.75">${esc(DATA.view.label)} · rata-rata ${fmt(curve.daily, 1)} µg/m³</span>`;
+        return `<b>${HOUR_LABELS[i]}:00</b>${body}${foot}`;
       },
     },
     xAxis: {
       type: 'category',
       boundaryGap: false,
-      data: labels,
+      data: HOUR_LABELS,
       axisLine: { lineStyle: { color: C.line } },
       axisTick: { show: false },
-      axisLabel: { color: C.muted, fontSize: 8.5, interval: 3 },
+      axisLabel: { color: C.muted, fontSize: 8.5, interval: detail ? 2 : 3 },
     },
     yAxis: {
       type: 'value',
@@ -4460,30 +4506,20 @@ function makeCycleChart(id) {
       max: yMax,
       splitNumber: 3,
       splitLine: { lineStyle: { color: C.grid } },
-      axisLabel: { color: C.muted, fontSize: 8.5, formatter: '{value}%' },
+      axisLabel: { color: C.muted, fontSize: 8.5 },
     },
     series: [
       {
-        ...line('Nasional', natVals, C.navy, false, 4),
-        markArea: {
-          silent: true,
-          itemStyle: { color: 'rgba(217,102,63,.10)' },
-          data: [[{ xAxis: '06' }, { xAxis: '08' }], [{ xAxis: '17' }, { xAxis: '19' }]],
-        },
-        markLine: {
-          silent: true,
-          symbol: 'none',
-          data: [{ yAxis: 100, lineStyle: { color: 'rgba(24,32,72,.32)', type: [4, 3], width: 1 }, label: { show: false } }],
-        },
-        markPoint: { silent: true, data: [peak(7), peak(18)].filter(Boolean) },
+        ...lines[0],
+        markLine: markLinePP(ppItem('y', 55, 'PP 55', C.yellow), ...dailyLine),
       },
-      line('Koridor jalan', road, C.terra, true, 2),
-      line('Lahan gambut', peat, C.teal, true, 2),
+      ...lines.slice(1),
     ],
   });
-  if (chart) {
+
+  if (chart && detail) {
     pickByPixel(chart, document.getElementById(id), 'x', (i) => {
-      const spec = detailHour(hours[i]);
+      const spec = detailHour(i);
       if (spec) openDetail(spec);
     });
   }
@@ -4564,30 +4600,30 @@ function makeSiteClassChart(id) {
 }
 
 function detailHour(h) {
-  const { natVals, road, peat } = cycleSeries();
+  const curve = diurnalCurve();
+  const classes = diurnalClassCurves();
   const i = Number(h);
-  const nat = natVals[i];
-  if (nat == null) return null;
-  const prev = natVals[(i + 23) % 24];
-  const delta = prev == null ? null : nat - prev;
+  const val = curve.means[i];
+  if (val == null) return null;
+  const prev = curve.means[(i + 23) % 24];
+  const delta = prev == null ? null : val - prev;
   const rows = [
-    { label: 'Nasional', value: nat, color: C.navy },
-    { label: 'Koridor jalan', value: road[i], color: C.terra },
-    { label: 'Lahan gambut', value: peat[i], color: C.teal },
+    { label: curve.label, value: val, color: C.navy },
+    ...classes.map((c) => ({ label: c.label, value: c.vals[i], color: DIURNAL_COLORS[c.cls] || C.grey })),
   ].filter((r) => r.value != null);
-  const label = `${String(i).padStart(2, '0')}:00`;
+  const label = `${HOUR_LABELS[i]}:00`;
   const body = `
     ${detailMetrics([
-      ['Indeks nasional', `${fmt(nat, 1)}%`, ''],
-      ['Vs jam sebelumnya', delta == null ? '—' : `${delta >= 0 ? '+' : '−'}${fmt(Math.abs(delta), 1)}`, 'poin'],
-      ['Jam', label, ''],
+      ['Kadar', `${fmt(val, 1)}`, 'µg/m³'],
+      ['Vs jam sebelumnya', delta == null ? '—' : `${delta >= 0 ? '+' : '−'}${fmt(Math.abs(delta), 1)}`, 'µg/m³'],
+      ['Rata-rata harian', curve.daily == null ? '—' : fmt(curve.daily, 1), 'µg/m³'],
     ])}
-    <div class="detail-block"><div class="detail-label">Indeks per kelas · % rata-rata harian</div>${detailBars(rows.map((r) => ({ ...r, display: `${fmt(r.value, 1)}%` })))}</div>
-    <div class="detail-note">100% = rata-rata harian masing-masing seri</div>
+    <div class="detail-block"><div class="detail-label">Per lokasi · µg/m³</div>${detailBars(rows.map((r) => ({ ...r, display: fmt(r.value, 1) })))}</div>
+    <div class="detail-note">${esc(DATA.view.label)} · garis PP 55 µg/m³ sebagai acuan</div>
     <button class="primary-btn detail-cta" type="button" data-detail-go="waktu">Buka di Waktu</button>`;
   return {
     key: `hour:${i}`,
-    kicker: 'Siklus 24 jam · indeks %',
+    kicker: `Siklus 24 jam · ${curve.label}`,
     title: label,
     chip: label,
     body,

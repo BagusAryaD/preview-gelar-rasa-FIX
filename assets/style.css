@@ -713,9 +713,10 @@ table.data .st.gagal{color:#6B1D16}
 .legend-sep{height:1px;background:var(--hairline);margin:6px 0 4px}
 .legend-sub{font-size:8px;color:var(--muted-2);line-height:1.35}
 .card-head .seg{transform:scale(.94);transform-origin:right center}
-.rs-strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:0 2px;font-size:10px;color:var(--muted)}
-.rs-strip span b{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--brand);margin-right:3px}
-.rs-strip-note{margin-left:auto;font-size:9px;color:var(--muted-2)}
+.rs-strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:0 2px;font-size:10px;color:var(--muted)}
+.rs-strip .status-chip{height:30px;gap:5px;padding:0 10px}
+.rs-strip span b{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--brand);margin-right:1px}
+.rs-strip .status-chip.total b{color:var(--brand)}
 .hspark{display:flex;align-items:flex-end;gap:2px;height:46px;padding:4px 0}
 .hspark-bar{flex:1;min-width:2px;background:var(--brand-3);border-radius:2px 2px 0 0;opacity:.9}
 .hspark-bar.partial{opacity:.38}
