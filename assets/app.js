@@ -278,6 +278,30 @@ function rangeLabel() {
   return rangeText(from, to);
 }
 
+/* Keterangan periode di samping judul plot.
+   'range' → mengikuti rentang filter · 'full' → seluruh periode data · 'day' → tanggal acuan.
+   Nilai lain dipakai apa adanya (teks literal, mis. jendela khusus sebuah grafik). */
+function periodText(kind) {
+  if (kind === 'range') return DATA.view.label;
+  if (kind === 'full') return `${DATE_MIN.slice(0, 4)}–${DATE_MAX.slice(0, 4)} penuh`;
+  if (kind === 'day') return shortDate(state.date);
+  return kind || '';
+}
+
+/* Geser tanggal ISO sejumlah hari (jendela grafik harian ± hari). */
+function shiftIso(iso, days) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/* Jendela rata-rata jaringan: N hari terakhir dataset (N dari days_2026 di JSON). */
+function networkMeanPeriod() {
+  const days = Math.max(0, ...(DATA.network.stations || []).map((s) => s.days_2026 || 0));
+  if (!days) return '';
+  return rangeText(shiftIso(DATE_MAX, -(days - 1)), DATE_MAX);
+}
+
 /* Penjelas tiap opsi rentang — jendela konkret dihitung dari tanggal acuan. */
 const RANGE_TIPS = {
   hari: 'Satu hari penuh pada tanggal acuan. Kurva 24 jam memakai jam-jaman tanggal itu.',
@@ -2031,7 +2055,11 @@ function pageHead(title, meta, actions = '') {
 function card(title, sub, body, opts = {}) {
   const id = opts.id ? ` id="${opts.id}"` : '';
   const cls = opts.cls ? ` ${opts.cls}` : '';
-  const right = opts.right || `<div class="card-sub">${sub}</div>`;
+  /* opts.period = keterangan periode; digabung ke sub kalau kartu tidak punya konten kanan. */
+  const period = opts.period ? periodText(opts.period) : '';
+  const right = opts.right
+    ? `${opts.right}${period ? `<div class="card-sub period">${esc(period)}</div>` : ''}`
+    : `<div class="card-sub">${[sub, period].filter(Boolean).join(' · ')}</div>`;
   return `<section class="card${cls}"${id}>
     <div class="card-head"><div class="card-title">${title}</div><div class="card-head-right">${right}</div></div>
     <div class="card-body">${body}</div>
@@ -2293,7 +2321,7 @@ function renderOverview() {
     <div class="kpi-row">${kpis}</div>
     <div class="grid-55">
       <section class="card map-card h-420">
-        <div class="card-head"><div class="card-title">Peta hotspot</div><div class="card-head-right">${provToggleHtml()}</div></div>
+        <div class="card-head"><div class="card-title">Peta hotspot</div><div class="card-head-right"><div class="card-sub">ISPU · ${esc(shortDate(state.date))}</div>${provToggleHtml()}</div></div>
         <div class="card-body"><div class="map" id="map-overview"></div><div class="map-legend" id="legend-overview"></div></div>
       </section>
       ${card(trendTitle, 'µg/m³ · bulanan · garis PP 55 & WHO 15', `<div class="chart" id="chart-trend"></div>`, { cls: 'h-420', right: `<div class="card-sub">P95 ${fmt(trend.p95, 1)} · ${esc(DATA.view.label)}</div>` })}
@@ -2301,13 +2329,13 @@ function renderOverview() {
     <div class="grid-12">
       ${card('Ranking pulau', `µg/m³ · ${DATA.view.label}`, `<div class="chart" id="chart-rank-island"></div>`, { cls: 'span-3 h-320' })}
       ${state.range === 'hari'
-        ? card('24 jam · tanggal acuan', `µg/m³ · per jam · ${dayMonth(state.date)}`, `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', right: '<div class="card-sub">jam-jaman</div>' })
-        : card('Siklus 24 jam', 'indeks % · 100 = rata-rata harian', `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320' })}
-      ${card('Kunjungan per kategori', `kasus · ${healthSpan().days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual</div>' })}
+        ? card('24 jam · tanggal acuan', `µg/m³ · per jam · ${dayMonth(state.date)}`, `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', right: '<div class="card-sub">jam-jaman</div>', period: state.station ? 'full' : 'day' })
+        : card('Siklus 24 jam', 'indeks % · 100 = rata-rata harian', `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', period: 'full' })}
+      ${card('Kunjungan per kategori', `kasus · ${healthSpan().days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual</div>', period: 'range' })}
     </div>
     <div class="grid-12">
-      ${card(islandCompTitle, '% hari-stasiun', `<div class="chart" id="chart-ispu-island"></div>` + ispuStackLegend(), { cls: 'span-6 h-280' })}
-      ${card('Perbandingan 5 kelas lokasi', 'baseline vs rata-rata · µg/m³', `<div class="chart" id="chart-class"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">klik untuk rincian</div>' })}
+      ${card(islandCompTitle, '% hari-stasiun', `<div class="chart" id="chart-ispu-island"></div>` + ispuStackLegend(), { cls: 'span-6 h-280', period: 'range' })}
+      ${card('Perbandingan 5 kelas lokasi', 'baseline vs rata-rata · µg/m³', `<div class="chart" id="chart-class"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">klik untuk rincian</div>', period: 'range' })}
     </div>
   </div>`;
 }
@@ -2533,22 +2561,22 @@ function renderTime() {
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="grid-12">
-      ${card('Perubahan PM2.5 harian', 'µg/m³', `<div class="chart" id="chart-daily"></div>`, { cls: 'span-12 h-460', right: '<div class="card-sub">µg/m³ · garis 15 / 55 / 100</div>' })}
+      ${card('Perubahan PM2.5 harian', 'µg/m³', `<div class="chart" id="chart-daily"></div>`, { cls: 'span-12 h-460', right: '<div class="card-sub">µg/m³ · garis 15 / 55 / 100</div>', period: state.range === 'hari' ? `${daySpan(shiftIso(state.date, -14), shiftIso(state.date, 7))} hari sekitar ${shortDate(state.date)}` : 'full' })}
     </div>
     <div class="grid-12">
-      ${card('Kalender harian', `PM2.5 · ${sub} · 2024–2026`, `<div class="chart" id="chart-heat"></div>`, { cls: 'span-7 h-340', right: `<div class="heat-legend" id="legend-heat"></div>` })}
-      ${card('Jam × hari', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-hour-dow"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">µg/m³ · jam × DOW</div>' })}
+      ${card('Kalender harian', `PM2.5 · ${sub}`, `<div class="chart" id="chart-heat"></div>`, { cls: 'span-7 h-340', right: `<div class="heat-legend" id="legend-heat"></div>`, period: `PM2.5 · ${sub} · ${periodText('full')}` })}
+      ${card('Jam × hari', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-hour-dow"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">µg/m³ · jam × DOW</div>', period: 'full' })}
     </div>
     <div class="grid-12">
       ${card('Siklus 24 jam per kelas lokasi', 'indeks % · 100 = rata-rata', `<div class="chart" id="chart-diurnal-class"></div>`, { cls: 'span-6 h-280', right: `<div class="card-sub">${esc(diurnalClassLabel())}</div>` })}
-      ${card('Bulanan per pulau', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-month-island"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
+      ${card('Bulanan per pulau', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-month-island"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>', period: 'full' })}
     </div>
     <div class="grid-12">
-      ${card('Episode per bulan', 'hari-stasiun >55 · 2024–2026', `<div class="chart" id="chart-episode-month"></div>`, { cls: 'span-7 h-280', right: '<div class="card-sub">hari-stasiun >55</div>' })}
-      ${card('Hari kerja vs akhir pekan', `µg/m³ · ${DATA.view.label}`, `<div class="chart" id="chart-weekday"></div>`, { cls: 'span-5 h-280', right: '<div class="card-sub">µg/m³ · per tahun</div>' })}
+      ${card('Episode per bulan', 'hari-stasiun >55 · 2024–2026', `<div class="chart" id="chart-episode-month"></div>`, { cls: 'span-7 h-280', right: '<div class="card-sub">hari-stasiun >55</div>', period: 'full' })}
+      ${card('Hari kerja vs akhir pekan', `µg/m³ · ${DATA.view.label}`, `<div class="chart" id="chart-weekday"></div>`, { cls: 'span-5 h-280', right: '<div class="card-sub">µg/m³ · per tahun</div>', period: 'range' })}
     </div>
     <div class="grid-12">
-      ${card('Komposisi ISPU per tahun', '% hari-stasiun · 2024–2026', `<div class="chart" id="chart-ispu-year"></div>` + ispuStackLegend(), { cls: 'span-12 h-280' })}
+      ${card('Komposisi ISPU per tahun', '% hari-stasiun', `<div class="chart" id="chart-ispu-year"></div>` + ispuStackLegend(), { cls: 'span-12 h-280', period: 'full' })}
     </div>
   </div>`;
 }
@@ -2651,7 +2679,7 @@ function classDiurnalSeries() {
 /* Label kartu siklus kelas: mengikuti rentang aktif (indeks dihitung dari
    matriks hourly kelas pada cakupan pulau/nasional terpilih). */
 function diurnalClassLabel() {
-  return `${viewRangeShort()} · indeks 100 = rata-rata`;
+  return `${DATA.view.label} · indeks 100 = rata-rata`;
 }
 function makeDiurnalClassChart() {
   const series = classDiurnalSeries();
@@ -2949,15 +2977,15 @@ function renderGeo() {
         <div class="card-body"><div class="map" id="map-geo"></div><div class="map-legend" id="legend-geo"></div></div>
       </section>
       <section class="card span-5 h-420">
-        <div class="card-head"><div class="card-title">Profil stasiun</div><div class="card-head-right">${st ? `<button class="ghost-btn" type="button" data-action="export-station">CSV</button><button class="ghost-btn" type="button" data-action="compare-station">Bandingkan</button>` : ''}<div class="card-sub">${st ? 'klik titik lain' : 'pilih stasiun'}</div></div></div>
+        <div class="card-head"><div class="card-title">Profil stasiun</div><div class="card-head-right">${st ? `<button class="ghost-btn" type="button" data-action="export-station">CSV</button><button class="ghost-btn" type="button" data-action="compare-station">Bandingkan</button>` : ''}<div class="card-sub">${st ? 'klik titik lain' : 'pilih stasiun'}</div><div class="card-sub period">${esc(DATA.view.label)}</div></div></div>
         <div class="card-body" id="profile-body">${renderProfile(st)}</div>
       </section>
     </div>
     <div class="grid-12">
-      ${card('Tren bulanan stasiun', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-profile-trend"></div>`, { cls: 'span-12 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
+      ${card('Tren bulanan stasiun', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-profile-trend"></div>`, { cls: 'span-12 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>', period: 'full' })}
     </div>
     <div class="grid-12">
-      ${card('Kronis–akut', `rata-rata vs P95 harian · ${DATA.view.label}`, `<div class="chart" id="chart-chronic"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">X rata-rata · Y P95</div>' })}
+      ${card('Kronis–akut', `rata-rata vs P95 harian · ${DATA.view.label}`, `<div class="chart" id="chart-chronic"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">X rata-rata · Y P95</div>', period: 'range' })}
       ${card('Ringkasan beban', 'µg/m³', `<div class="card-body" id="chronic-stats" style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:start"></div>`, { cls: 'span-5 h-320', right: `<div class="card-sub">${esc(DATA.view.label)}</div>` })}
     </div>
     ${renderGeoTable()}
@@ -2969,6 +2997,7 @@ function renderGeoTable() {
     <div class="card-head">
       <div class="card-title">Tabel 27 stasiun</div>
       <div class="card-head-right">
+        <div class="card-sub">${esc(DATA.view.label)}</div>
         <input class="method-search" id="geo-table-search" type="search" placeholder="Cari stasiun/kota" value="${esc(state.tableSearch)}" aria-label="Cari stasiun">
         <label class="filter-group"><span class="filter-label">Urut</span><select class="select" id="geo-table-sort">${['mean','p95','usable','name'].map((k) => `<option value="${k}" ${state.tableSort === k ? 'selected' : ''}>${({mean:'Rata-rata',p95:'P95',usable:'Kelayakan',name:'Nama'})[k]}</option>`).join('')}</select></label>
         <button class="ghost-btn" type="button" data-action="download-overview">CSV</button>
@@ -3315,12 +3344,12 @@ function renderSource() {
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="grid-12">
-      ${card('Baseline vs PM2.5', `X baseline µg/m³ · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-baseline"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : ''} · garis 55</div>` })}
-      ${card('Jarak jalan vs PM2.5', `X meter (log) · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-distance"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.distance ? fmtR(corrDisplay.distance.r) : ''} · garis 55</div>` })}
-      ${card('Lalu lintas vs PM2.5', `X kendaraan/jam · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-traffic"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : ''} · garis 55</div>` })}
+      ${card('Baseline vs PM2.5', `X baseline µg/m³ · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-baseline"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : ''} · garis 55</div>`, period: 'range' })}
+      ${card('Jarak jalan vs PM2.5', `X meter (log) · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-distance"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.distance ? fmtR(corrDisplay.distance.r) : ''} · garis 55</div>`, period: 'range' })}
+      ${card('Lalu lintas vs PM2.5', `X kendaraan/jam · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-traffic"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : ''} · garis 55</div>`, period: 'range' })}
     </div>
     <div class="grid-12">
-      ${card('Matriks korelasi polutan', 'Pearson · pooled hari-stasiun · 2024–2026', `<div class="chart" id="chart-pollutant-matrix"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">PM2.5 · PM10 · SO2 · NO2 · O3 · CO</div>' })}
+      ${card('Matriks korelasi polutan', 'Pearson · pooled hari-stasiun · 2024–2026', `<div class="chart" id="chart-pollutant-matrix"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">PM2.5 · PM10 · SO2 · NO2 · O3 · CO</div>', period: 'full' })}
       <section class="card span-6 h-340">
         <div class="card-head"><div class="card-title">Rata-rata polutan</div><div class="card-head-right"><div class="card-sub">${esc(DATA.view.label)}</div></div></div>
         <div class="card-body"><div class="stat-grid">${pollutants.map((r) => `<div class="stat-block"><div class="k">${esc(r.label)}</div><div class="v">${fmt(r.value, 1)} <small>${esc(r.unit)}</small></div><div class="n">n = ${fmtInt(r.n)}</div></div>`).join('')}</div></div>
@@ -3328,10 +3357,10 @@ function renderSource() {
     </div>
     <div class="grid-12">
       <section class="card span-6 h-340">
-        <div class="card-head"><div class="card-title">Arah angin</div><div class="card-head-right"><label class="filter-group"><span class="filter-label">Stasiun</span><select class="select" id="wind-station">${windOptions}</select></label><div class="card-sub">16 sektor · 5 kelas</div></div></div>
+        <div class="card-head"><div class="card-title">Arah angin</div><div class="card-head-right"><label class="filter-group"><span class="filter-label">Stasiun</span><select class="select" id="wind-station">${windOptions}</select></label><div class="card-sub">16 sektor · 5 kelas</div><div class="card-sub period">${esc(periodText('full'))}</div></div></div>
         <div class="card-body"><div class="chart" id="chart-windrose"></div></div>
       </section>
-      ${card('Korelasi meteorologi', 'r jam-jaman · per stasiun', `<div class="table-wrap" style="height:auto;max-height:340px"><table class="data" id="meteo-table"></table></div>`, { cls: 'span-6 h-auto', right: '<div class="card-sub">r = PM2.5 vs suhu/kelembapan/angin</div>' })}
+      ${card('Korelasi meteorologi', 'r jam-jaman · per stasiun', `<div class="table-wrap" style="height:auto;max-height:340px"><table class="data" id="meteo-table"></table></div>`, { cls: 'span-6 h-auto', right: '<div class="card-sub">r = PM2.5 vs suhu/kelembapan/angin</div>', period: 'full' })}
     </div>
     <div class="grid-12">
       <section class="card span-12 h-auto">
@@ -3534,25 +3563,25 @@ function renderHealth() {
       <span class="rs-strip-note">${esc(DATA.view.label)} · ${y.days} hari</span>
     </div>
     <div class="grid-12">
-      ${card('Kunjungan per kategori', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual</div>' })}
-      ${card('Kunjungan per tahun', 'kasus · rentang sama', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">2024–2026</div>' })}
+      ${card('Kunjungan per kategori', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual</div>', period: 'range' })}
+      ${card('Kunjungan per tahun', 'kasus · rentang sama tiap tahun', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">2024–2026</div>', period: 'range' })}
     </div>
     <div class="grid-12">
       <section class="card span-12 h-460">
-        <div class="card-head"><div class="card-title">PM2.5 dan kunjungan</div><div class="card-head-right"><div class="card-sub">dua panel · bukan dual axis</div></div></div>
+        <div class="card-head"><div class="card-title">PM2.5 dan kunjungan</div><div class="card-head-right"><div class="card-sub">dua panel · bukan dual axis</div><div class="card-sub period">${esc(periodText('full'))}</div></div></div>
         <div class="card-body" style="display:flex;flex-direction:column"><div class="legend-note" style="padding:5px 12px 0">atas: PM2.5 µg/m³ · bawah: kunjungan harian</div><div style="height:128px;flex:0 0 128px;position:relative"><div class="chart" id="chart-pm-month"></div></div><div style="height:128px;flex:0 0 128px;position:relative"><div class="chart" id="chart-resp-month"></div></div></div>
       </section>
     </div>
     <div class="grid-12">
       <section class="card map-card span-7 h-320">
-        <div class="card-head"><div class="card-title">Peta kasus rumah sakit</div><div class="card-head-right">${provToggleHtml()}</div></div>
+        <div class="card-head"><div class="card-title">Peta kasus rumah sakit</div><div class="card-head-right"><div class="card-sub">${esc(DATA.view.label)}</div>${provToggleHtml()}</div></div>
         <div class="card-body"><div class="map" id="map-health"></div><div class="map-legend" id="legend-health"></div></div>
       </section>
-      ${card('Kunjungan per 100 TT vs PM2.5', `X rata-rata PM2.5 · Y kunjungan/100 TT`, `<div class="chart" id="chart-health-scatter"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">µg/m³ · kasus</div>' })}
+      ${card('Kunjungan per 100 TT vs PM2.5', `X rata-rata PM2.5 · Y kunjungan/100 TT`, `<div class="chart" id="chart-health-scatter"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">µg/m³ · kasus</div>', period: 'range' })}
     </div>
     <div class="grid-12">
-      ${card('Lag 0–14', 'r anomali', `<div class="chart" id="chart-lag"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">r · lag 0–14</div>' })}
-      ${card('Kelompok rentan', 'kunjungan harian · bulanan', `<div class="chart" id="chart-vulnerable"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">bulanan</div>' })}
+      ${card('Lag 0–14', 'r anomali', `<div class="chart" id="chart-lag"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">r · lag 0–14</div>', period: 'full' })}
+      ${card('Kelompok rentan', 'kunjungan harian · bulanan', `<div class="chart" id="chart-vulnerable"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">bulanan</div>', period: 'full' })}
     </div>
     <div class="grid-12">
       <section class="card span-12 h-auto">
@@ -3564,6 +3593,7 @@ function renderHealth() {
               <button type="button" data-health-table="rs" class="${healthTab === 'rs' ? 'active' : ''}" aria-pressed="${healthTab === 'rs'}">Rumah sakit</button>
             </div>
             <div class="card-sub" id="health-table-sub">${healthTab === 'rs' ? per100Unit() : 'r lag 0 tertinggi'}</div>
+            <div class="card-sub period">${esc(DATA.view.label)}</div>
           </div>
         </div>
         <div class="card-body"><div class="table-wrap" style="height:auto;max-height:360px"><table class="data" id="health-top-table"></table></div></div>
@@ -3885,30 +3915,30 @@ function renderNetwork() {
     <div class="network-strip">${strip}<span class="status-chip total">Total <b>${rows.length}</b></span></div>
     <div class="grid-12">
       <section class="card span-6 h-320">
-        <div class="card-head"><div class="card-title">Peta status</div><div class="card-head-right"><div class="card-sub">status stasiun</div></div></div>
+        <div class="card-head"><div class="card-title">Peta status</div><div class="card-head-right"><div class="card-sub">status stasiun</div><div class="card-sub period">${esc(periodText('full'))}</div></div></div>
         <div class="card-body"><div class="map" id="map-network"></div><div class="map-legend" id="legend-network"></div></div>
       </section>
-      ${card('Hasil pemeriksaan data', 'proporsi baris', `<div class="chart" id="chart-qc"></div>` + `<div class="stack-legend">${qcLegend}</div>`, { cls: 'span-6 h-320', right: '<div class="card-sub">667.981 baris</div>' })}
+      ${card('Hasil pemeriksaan data', 'proporsi baris', `<div class="chart" id="chart-qc"></div>` + `<div class="stack-legend">${qcLegend}</div>`, { cls: 'span-6 h-320', right: '<div class="card-sub">667.981 baris</div>', period: 'full' })}
     </div>
     <div class="grid-12">
       <section class="card span-6 h-240">
-        <div class="card-head"><div class="card-title">Eksklusi & pengecualian</div><div class="card-head-right"><div class="card-sub">diagnostik</div></div></div>
+        <div class="card-head"><div class="card-title">Eksklusi & pengecualian</div><div class="card-head-right"><div class="card-sub">diagnostik</div><div class="card-sub period">${esc(periodText('full'))}</div></div></div>
         <div class="card-body"><div class="stat-grid">${Object.entries(exclusions).map(([k, v]) => `<div class="stat-block"><div class="k">${esc(k)}</div><div class="v" style="font-size:9px;white-space:normal">${esc(v)}</div></div>`).join('')}</div></div>
       </section>
       <section class="card span-6 h-240">
-        <div class="card-head"><div class="card-title">Blind spot</div><div class="card-head-right"><div class="card-sub">tanpa stasiun</div></div></div>
+        <div class="card-head"><div class="card-title">Blind spot</div><div class="card-head-right"><div class="card-sub">tanpa stasiun</div><div class="card-sub period">${esc(periodText('full'))}</div></div></div>
         <div class="card-body" style="padding:12px;display:flex;flex-direction:column;gap:8px">${DATA.network.blind_spots.map((b) => `<span class="pill warning">${esc(b)}</span>`).join('')}</div>
       </section>
     </div>
     <div class="grid-12">
-      ${card('Matriks kelengkapan stasiun × bulan', '% hari layak', `<div class="chart" id="chart-completeness-matrix"></div>`, { cls: 'span-12 h-420', right: '<div class="card-sub">hari layak / hari kalender</div>' })}
+      ${card('Matriks kelengkapan stasiun × bulan', '% hari layak', `<div class="chart" id="chart-completeness-matrix"></div>`, { cls: 'span-12 h-420', right: '<div class="card-sub">hari layak / hari kalender</div>', period: 'full' })}
     </div>
     <div class="grid-12">
-      ${card('Prioritas pemantauan', 'X gap data · Y rata-rata', `<div class="chart" id="chart-priority"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">mean vs gap</div>' })}
-      ${card('Titik perhatian', 'gap >20% atau status buruk', `<div class="table-wrap" style="height:auto;max-height:320px"><table class="data" id="network-attention"></table></div>`, { cls: 'span-5 h-auto', right: '<div class="card-sub">perhatian</div>' })}
+      ${card('Prioritas pemantauan', 'X gap data · Y rata-rata', `<div class="chart" id="chart-priority"></div>`, { cls: 'span-7 h-320', right: '<div class="card-sub">mean vs gap</div>', period: networkMeanPeriod() })}
+      ${card('Titik perhatian', 'gap >20% atau status buruk', `<div class="table-wrap" style="height:auto;max-height:320px"><table class="data" id="network-attention"></table></div>`, { cls: 'span-5 h-auto', right: '<div class="card-sub">perhatian</div>', period: 'full' })}
     </div>
     <section class="card span-12 h-auto">
-      <div class="card-head"><div class="card-title">Status 27 stasiun</div><div class="card-head-right"><div class="card-sub">kelengkapan terendah dulu</div></div></div>
+      <div class="card-head"><div class="card-title">Status 27 stasiun</div><div class="card-head-right"><div class="card-sub">kelengkapan terendah dulu</div><div class="card-sub period">${esc(periodText('full'))}</div></div></div>
       <div class="card-body"><div class="table-wrap" style="height:auto;max-height:360px"><table class="data" id="network-table"></table></div></div>
     </section>
   </div>`;
