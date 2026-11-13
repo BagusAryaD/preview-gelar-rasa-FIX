@@ -226,12 +226,16 @@ function clampDate(iso) {
   return iso < DATE_MIN ? DATE_MIN : (iso > DATE_MAX ? DATE_MAX : iso);
 }
 
-function rangeBounds() {
-  const d = clampDate(state.date);
-  if (state.range === 'hari') return [d, d];
-  if (state.range === 'bulan') return [`${d.slice(0, 7)}-01`, d];
-  if (state.range === 'tahun') return [`${d.slice(0, 4)}-01-01`, d];
+function boundsFor(range, date) {
+  const d = clampDate(date);
+  if (range === 'hari') return [d, d];
+  if (range === 'bulan') return [`${d.slice(0, 7)}-01`, d];
+  if (range === 'tahun') return [`${d.slice(0, 4)}-01-01`, d];
   return [DATE_MIN, d];
+}
+
+function rangeBounds() {
+  return boundsFor(state.range, state.date);
 }
 
 function shortDate(iso) {
@@ -250,9 +254,47 @@ function rangeText(from, to) {
   return `${shortDate(from)} – ${shortDate(to)}`;
 }
 
+/* Jumlah hari inklusif antara dua tanggal ISO (dihitung, bukan ditulis manual). */
+function daySpan(from, to) {
+  const utc = (iso) => Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10)));
+  return Math.round((utc(to) - utc(from)) / 86400000) + 1;
+}
+
+/* Label rentang ringkas untuk badge kartu: "14 Okt 2026" · "Okt 2026" · "2026" · "2024–2026". */
+function viewRangeShort() {
+  const [from, to] = rangeBounds();
+  if (from === to) return shortDate(to);
+  const fy = from.slice(0, 4);
+  const ty = to.slice(0, 4);
+  if (fy === ty) {
+    if (from.slice(5) === '01-01') return ty;
+    return `${MONTH_ABBR[Number(from.slice(5, 7)) - 1]} ${ty}`;
+  }
+  return `${fy}–${ty}`;
+}
+
 function rangeLabel() {
   const [from, to] = rangeBounds();
   return rangeText(from, to);
+}
+
+/* Penjelas tiap opsi rentang — jendela konkret dihitung dari tanggal acuan. */
+const RANGE_TIPS = {
+  hari: 'Satu hari penuh pada tanggal acuan. Kurva 24 jam memakai jam-jaman tanggal itu.',
+  bulan: 'Dari tanggal 1 bulan berjalan sampai tanggal acuan.',
+  tahun: 'Dari 1 Januari tahun berjalan sampai tanggal acuan.',
+  semua: 'Seluruh periode data yang tersedia, tanpa batas tahun.',
+};
+
+function rangeTipHtml(key) {
+  const [from, to] = boundsFor(key, state.date);
+  const days = daySpan(from, to);
+  return `<div class="tip-title">Rentang · ${esc(RANGE_NAMES[key])}</div>`
+    + '<div class="tip-rows">'
+    + `<div class="tip-row"><span>Periode</span><b>${esc(rangeText(from, to))}</b></div>`
+    + `<div class="tip-row"><span>Hari</span><b>${fmtInt(days)} hari</b></div>`
+    + '</div>'
+    + `<div class="tip-note">${esc(RANGE_TIPS[key])}</div>`;
 }
 
 function shiftSpan(from, to, year) {
@@ -393,6 +435,7 @@ function applyHealthRange(from, to) {
   const ids = healthHospitalIds();
   DATA.health.scopeYears = healthYearsFor(ids, from, to);
   DATA.health.years = DATA.health.scopeYears;
+  DATA.health.span = sumHealth(ids, from, to);
   const byIsland = {};
   DATA.islands.forEach((isl) => {
     const iids = (DATA.hospitals.hospitals || []).filter((h) => h.island === isl).map((h) => h.id);
@@ -672,6 +715,7 @@ function syncRangeUi() {
     const on = b.dataset.range === state.range;
     b.classList.toggle('active', on);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.setAttribute('data-tip-html', rangeTipHtml(b.dataset.range));
   });
 }
 
@@ -942,24 +986,22 @@ function onPageClick(e) {
       link.click();
     }
     if (a === 'download-overview') {
-      downloadCSV('napas_ranking_2026.csv', [['station', 'island', 'mean_2026', 'p95_2026', 'max_2026', 'days_2026', 'status'], ...topRows().map((r) => [r.id, r.island, r.mean_2026, r.p95_2026, r.max_2026, r.days_2026, r.status])]);
-    }
-    if (a === 'download-time') {
-      downloadCSV('napas_bulanan.csv', [['month', 'pm25', 'stations', 'days'], ...DATA.overview.monthly.map((r) => [r.month, r.pm25, r.stations, r.days])]);
+      downloadCSV(`napas_ranking_${state.range}.csv`, [['station', 'island', 'mean', 'p95', 'max', 'days', 'status', 'rentang'], ...topRows().map((r) => [r.id, r.island, r.mean_2026, r.p95_2026, r.max_2026, r.days_2026, r.status, DATA.view.label])]);
     }
     if (a === 'download-source') {
       const rows = sourceRows();
       downloadCSV('napas_sumber.csv', [['station', 'pm25', 'baseline', 'distance', 'traffic', 'days', 'status'], ...rows.map((r) => [r.station, r.pm25, r.baseline, r.distance, r.traffic, r.days, r.status])]);
     }
     if (a === 'download-health') {
-      downloadCSV('napas_kesehatan.csv', [['outcome', 'kunjungan', 'hari', 'rentang'], ...DATA.health.outcomes.map((o) => [o.label, DATA.health.years[2].actual[o.key] || 0, DATA.health.years[2].days, DATA.view.label])]);
+      const span = healthSpan();
+      downloadCSV('napas_kesehatan.csv', [['outcome', 'kunjungan', 'hari', 'rentang'], ...DATA.health.outcomes.map((o) => [o.label, span.actual[o.key] || 0, span.days, DATA.view.label])]);
     }
     if (a === 'download-daily') {
       downloadCSV('napas_harian_nasional.csv', [['date', 'pm25', 'stations'], ...DATA.time.daily.map((r) => [r[0], r[1], r[2]])]);
     }
     if (a === 'download-network') {
       const rows = networkRows();
-      downloadCSV('napas_jaringan.csv', [['station', 'island', 'status', 'usable_pct', 'mean_2026', 'gap'], ...rows.map((r) => [r.station, r.island, r.status, r.usable_pct, r.mean_2026, r.gap])]);
+      downloadCSV(`napas_jaringan_${state.range}.csv`, [['station', 'island', 'status', 'usable_pct', 'mean', 'gap', 'rentang'], ...rows.map((r) => [r.station, r.island, r.status, r.usable_pct, r.mean_2026, r.gap, DATA.view.label])]);
     }
   }
 }
@@ -1311,10 +1353,11 @@ function detailHourDow(hour, dow) {
 }
 
 function detailDiurnalClass(cls) {
-  const series = DATA.time.diurnal_class[cls] || {};
+  const found = classDiurnalSeries().find((s) => s.cls === cls);
+  const series = (found && found.values) || [];
   const members = DATA.stations.stations.filter((s) => s.site_class === cls);
-  const hours = Array.from({ length: 24 }, (_, h) => String(h));
-  const vals = hours.map((h) => Number(series[h])).filter((v) => Number.isFinite(v));
+  const hours = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
+  const vals = series.filter((v) => v != null && Number.isFinite(v));
   const peak = vals.length ? Math.max(...vals) : null;
   const low = vals.length ? Math.min(...vals) : null;
   const body = `
@@ -1324,13 +1367,13 @@ function detailDiurnalClass(cls) {
       ['Terendah', low == null ? '—' : fmt(low, 1), '%'],
     ])}
     <div class="detail-block"><div class="detail-label">Indeks 24 jam · 100 = rata-rata</div>
-      ${detailBars(hours.map((h) => ({ label: `${String(h).padStart(2, '0')}`, value: Number(series[h]), color: Number(series[h]) >= 100 ? (DIURNAL_COLORS[cls] || C.navy) : C.grey2, display: `${fmt(series[h], 0)}%` })))}
+      ${detailBars(hours.map((h, i) => ({ label: h, value: series[i] == null ? 0 : series[i], color: series[i] != null && series[i] >= 100 ? (DIURNAL_COLORS[cls] || C.navy) : C.grey2, display: series[i] == null ? '—' : `${fmt(series[i], 0)}%` })))}
     </div>
     <div class="detail-block"><div class="detail-label">Stasiun kelas ini</div>
       ${detailBars(members.map((s) => ({ label: s.id, value: s.mean_2026, id: s.id, color: CAT_COLORS[categoryFromPm(s.mean_2026)] || C.navy })))}
     </div>`;
   return {
-    key: `diurnal:${cls}`,
+    key: `diurnal:${cls}:${DATA.view.label}`,
     kicker: 'Siklus 24 jam per kelas lokasi',
     title: cls,
     chip: cls,
@@ -1592,23 +1635,24 @@ function detailOutcome(key) {
   const o = (DATA.health.outcomes || []).find((x) => x.key === key);
   if (!o) return null;
   const years = healthYears();
-  const y = years[years.length - 1];
-  if (!y) return null;
-  const a = y.actual[key] || 0;
-  const totalResp = y.actual.resp || 0;
+  const cur = years[years.length - 1];
+  const span = healthSpan();
+  if (!cur || !span) return null;
+  const a = span.actual[key] || 0;
+  const totalResp = span.actual.resp || 0;
   const scope = state.island === 'Semua' ? 'nasional' : state.island;
   const body = `
     ${detailMetrics([
       ['Kunjungan', fmtInt(a), 'kasus'],
-      ['Hari', fmtInt(y.days), 'hari'],
+      ['Hari', fmtInt(span.days), 'hari'],
       ['Porsi respirasi', totalResp ? `${fmt(a / totalResp * 100, 1)}%` : '—', ''],
     ])}
     <div class="detail-block"><div class="detail-label">Kunjungan per tahun · rentang sama</div>
-      ${detailBars(years.map((r) => ({ label: String(r.year), value: r.actual[key] || 0, color: r.year === y.year ? C.navy : C.grey2, display: fmtInt(r.actual[key] || 0) })))}
+      ${detailBars(years.map((r) => ({ label: String(r.year), value: r.actual[key] || 0, color: r.year === cur.year ? C.navy : C.grey2, display: fmtInt(r.actual[key] || 0) })))}
     </div>
     <div class="detail-list">
       <div class="row"><span>Rentang</span><b>${esc(DATA.view.label)}</b></div>
-      <div class="row"><span>Hari tercatat</span><b>${y.days} hari</b></div>
+      <div class="row"><span>Hari tercatat</span><b>${span.days} hari</b></div>
       <div class="row"><span>Rumah sakit</span><b>${healthHospitalIds().length}</b></div>
     </div>
     <div class="detail-note">Kunjungan yang tercatat di rumah sakit mitra, bukan kasus yang diatribusikan ke PM2.5.</div>
@@ -1912,7 +1956,10 @@ function detailNetworkStation(id) {
 function disposeAll() {
   charts.forEach((c) => { try { c.dispose(); } catch (_) {} });
   charts = [];
-  maps.forEach((m) => { try { m.remove(); } catch (_) {} });
+  maps.forEach((m) => {
+    try { if (m.__napasTip && m.__napasTip.destroy) m.__napasTip.destroy(); } catch (_) {}
+    try { m.remove(); } catch (_) {}
+  });
   maps = [];
 }
 
@@ -2057,11 +2104,10 @@ function overviewKpis() {
   const top = topRowsFull();
   const topStation = state.station ? (DATA.stationsById.get(state.station) || top[0]) : top[0];
   const topLabel = topStation ? `${fmt(topStation.mean_2026 ?? scope.mean, 1)}` : '—';
-  const years = healthYears();
-  const cur = years[years.length - 1];
+  const span = healthSpan();
   const scopeName = state.station || (state.island === 'Semua' ? 'nasional' : state.island);
-  const resp = cur ? cur.actual.resp : null;
-  const respDays = cur ? cur.days : null;
+  const resp = span ? span.actual.resp : null;
+  const respDays = span ? span.days : null;
   const ratioRow = (DATA.overview.kpis || []).find((k) => k.id === 'national');
   const ratio = ratioRow && ratioRow.ratio ? `${fmt(ratioRow.ratio, 2)}× 2024` : '—';
   const label = DATA.view.label;
@@ -2081,7 +2127,7 @@ function overviewKpis() {
     },
     {
       id: 'above55', label: 'Hari melampaui 55 µg/m³', value: scope.above55_pct, unit: '%',
-      baseline: `${fmtInt(scope.severe_n)} hari >150,4`, window: DATA.view.name,
+      baseline: `${fmtInt(scope.severe_n)} hari-stasiun >150,4`, window: DATA.view.name,
       note: `${scopeName} · ${fmtInt(scope.above55_n)} dari ${fmtInt(scope.days)} hari-stasiun · ${label}`,
       tip: [
         ['Definisi', 'Porsi hari-stasiun dengan PM2.5 di atas 55 µg/m³'],
@@ -2185,6 +2231,20 @@ function healthYears() {
   return (DATA.health.byIsland || {})[state.island] || DATA.health.years;
 }
 
+/* Cakupan sebenarnya rentang aktif (tanpa pergeseran tahun):
+   haridistinct + total kunjungan sepanjang rentang terpilih. */
+function healthSpan() {
+  if (DATA.health.span) return DATA.health.span;
+  const years = healthYears();
+  const actual = {};
+  let days = 0;
+  years.forEach((r) => {
+    days += r.days || 0;
+    Object.keys(r.actual || {}).forEach((k) => { actual[k] = (actual[k] || 0) + (r.actual[k] || 0); });
+  });
+  return { days, actual };
+}
+
 function healthLag() {
   if (state.island === 'Semua') return DATA.health.lag;
   return DATA.health.lag_by_island[state.island] || DATA.health.lag;
@@ -2243,7 +2303,7 @@ function renderOverview() {
       ${state.range === 'hari'
         ? card('24 jam · tanggal acuan', `µg/m³ · per jam · ${dayMonth(state.date)}`, `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', right: '<div class="card-sub">jam-jaman</div>' })
         : card('Siklus 24 jam', 'indeks % · 100 = rata-rata harian', `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320' })}
-      ${card('Kunjungan per kategori', `kasus · ${healthYears()[2].days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual</div>' })}
+      ${card('Kunjungan per kategori', `kasus · ${healthSpan().days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual</div>' })}
     </div>
     <div class="grid-12">
       ${card(islandCompTitle, '% hari-stasiun', `<div class="chart" id="chart-ispu-island"></div>` + ispuStackLegend(), { cls: 'span-6 h-280' })}
@@ -2480,7 +2540,7 @@ function renderTime() {
       ${card('Jam × hari', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-hour-dow"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">µg/m³ · jam × DOW</div>' })}
     </div>
     <div class="grid-12">
-      ${card('Siklus 24 jam per kelas lokasi', '% rata-rata · 2024–2026', `<div class="chart" id="chart-diurnal-class"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">indeks % · 100 = rata-rata</div>' })}
+      ${card('Siklus 24 jam per kelas lokasi', 'indeks % · 100 = rata-rata', `<div class="chart" id="chart-diurnal-class"></div>`, { cls: 'span-6 h-280', right: `<div class="card-sub">${esc(diurnalClassLabel())}</div>` })}
       ${card('Bulanan per pulau', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-month-island"></div>`, { cls: 'span-6 h-280', right: '<div class="card-sub">µg/m³ · garis 55</div>' })}
     </div>
     <div class="grid-12">
@@ -2538,25 +2598,85 @@ function makeHourDowChart() {
   });
   return chart;
 }
+/* Indeks siklus 24 jam per kelas lokasi, mengikuti rentang & pulau aktif.
+   Sumber: matriks hourly per (cakupan, kelas) di data/hourly.json.
+   Indeks 100 = rata-rata jam tersebut pada rentang terpilih. */
+function classDiurnalSeries() {
+  const hourly = DATA.hourly || {};
+  const dates = hourly.dates || [];
+  const classScopes = hourly.class_scopes || {};
+  const scope = state.island === 'Semua' ? 'Nasional' : state.island;
+  const perClass = (scope && classScopes[scope]) || null;
+  const out = [];
+  if (perClass) {
+    const [from, to] = rangeBounds();
+    Object.keys(perClass).forEach((cls) => {
+      const mat = perClass[cls];
+      const sums = new Array(24).fill(0);
+      const counts = new Array(24).fill(0);
+      for (let i = 0; i < dates.length; i += 1) {
+        const d = dates[i];
+        if (d < from || d > to) continue;
+        const row = mat[i];
+        if (!row) continue;
+        for (let h = 0; h < 24; h += 1) {
+          const v = row[h];
+          if (v == null) continue;
+          sums[h] += v;
+          counts[h] += 1;
+        }
+      }
+      const means = sums.map((s, h) => (counts[h] ? s / counts[h] : null));
+      const valid = means.filter((v) => v != null);
+      if (!valid.length) return;
+      const overall = valid.reduce((a, b) => a + b, 0) / valid.length;
+      if (!overall) return;
+      out.push({ cls, values: means.map((v) => (v == null ? null : Math.round(v / overall * 1000) / 10)) });
+    });
+  }
+  if (!out.length) {
+    const fallback = DATA.time.diurnal_class || {};
+    Object.keys(fallback).forEach((cls) => {
+      out.push({
+        cls,
+        values: Array.from({ length: 24 }, (_, h) => {
+          const v = fallback[cls][String(h)];
+          return v == null ? null : Number(v);
+        }),
+      });
+    });
+  }
+  return out;
+}
+/* Label kartu siklus kelas: mengikuti rentang aktif (indeks dihitung dari
+   matriks hourly kelas pada cakupan pulau/nasional terpilih). */
+function diurnalClassLabel() {
+  return `${viewRangeShort()} · indeks 100 = rata-rata`;
+}
 function makeDiurnalClassChart() {
-  const classes = Object.keys(DATA.time.diurnal_class || {});
+  const series = classDiurnalSeries();
   const hours = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
+  const all = series.flatMap((s) => s.values).filter((v) => v != null);
+  const lo = all.length ? Math.min(...all) : 75;
+  const hi = all.length ? Math.max(...all) : 140;
+  const yMin = Math.min(75, Math.floor((lo - 4) / 5) * 5);
+  const yMax = Math.max(140, Math.ceil((hi + 4) / 5) * 5);
   const chart = makeChart('chart-diurnal-class', {
     aria: { enabled: true },
     grid: { left: 40, right: 12, top: 30, bottom: 26 },
     legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 7, textStyle: { fontSize: 8, color: C.muted } },
     tooltip: { ...tooltipBase(), trigger: 'axis' },
     xAxis: { type: 'category', data: hours, axisLabel: { color: C.muted, fontSize: 8, interval: 2 }, axisTick: { show: false } },
-    yAxis: { type: 'value', min: 75, max: 140, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8, formatter: '{value}%' } },
-    series: classes.map((cls) => ({ name: cls, type: 'line', data: hours.map((_, h) => DATA.time.diurnal_class[cls][String(h)]), smooth: false, symbol: 'none', lineStyle: { width: 1.6, color: DIURNAL_COLORS[cls] || C.navy }, itemStyle: { color: DIURNAL_COLORS[cls] || C.navy }, markLine: cls === classes[0] ? { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: C.muted, width: 1 }, data: [{ yAxis: 100 }] } : undefined })),
+    yAxis: { type: 'value', min: yMin, max: yMax, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8, formatter: '{value}%' } },
+    series: series.map((s, si) => ({ name: s.cls, type: 'line', data: s.values, smooth: false, symbol: 'none', lineStyle: { width: 1.6, color: DIURNAL_COLORS[s.cls] || C.navy }, itemStyle: { color: DIURNAL_COLORS[s.cls] || C.navy }, markLine: si === 0 ? { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: C.muted, width: 1 }, data: [{ yAxis: 100 }] } : undefined })),
   });
   pickByPixel(chart, document.getElementById('chart-diurnal-class'), 'x', (hour, yVal) => {
     let best = null;
-    classes.forEach((cls) => {
-      const v = Number((DATA.time.diurnal_class[cls] || {})[String(hour)]);
+    series.forEach((s) => {
+      const v = Number(s.values[hour]);
       if (!Number.isFinite(v)) return;
       const d = Math.abs(v - yVal);
-      if (!best || d < best.d) best = { cls, d };
+      if (!best || d < best.d) best = { cls: s.cls, d };
     });
     if (best) openDetail(detailDiurnalClass(best.cls));
   });
@@ -2910,7 +3030,7 @@ function makeChronicChart() {
     tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.value[3])}</b><br>mean ${fmt(p.value[0], 1)} µg/m³<br>P95 ${fmt(p.value[1], 1)} µg/m³<br>${esc(p.value[2])} · ${fmtInt(p.value[4])} hari` },
     xAxis: { type: 'value', name: 'mean µg/m³', nameLocation: 'middle', nameGap: 20, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
     yAxis: { type: 'value', name: 'P95 µg/m³', nameGap: 16, nameTextStyle: { fontSize: 9, color: C.muted }, splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8 } },
-    series: rows.map((s, si) => ({ type: 'scatter', data: [[s.mean_2026, s.p95_2026, s.ispu_dominant || '—', s.id, s.days_2026]], symbolSize: 8, itemStyle: { color: catColor(s.ispu_dominant), borderColor: C.paper, borderWidth: 1.2 }, label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, formatter: (p) => (p.value[0] > 150 || p.value[1] > 400 || p.value[3] === 'SM2-01') ? p.value[3] : '', distance: 4 }, markLine: si === 0 ? markLinePP(ppItem('x', 55, '55', C.yellow), ppItem('y', 55, 'PP 55', C.yellow)) : undefined })),
+    series: rows.map((s, si) => ({ type: 'scatter', data: [[s.mean_2026, s.p95_2026, s.ispu_dominant || '—', s.id, s.days_2026]], symbolSize: 8, itemStyle: { color: catColor(s.ispu_dominant), borderColor: C.paper, borderWidth: 1.2 }, label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, formatter: (p) => (p.value[0] > 150 || p.value[1] > 400 || p.value[3] === 'SM2-01') ? p.value[3] : '', distance: 4 }, labelLayout: { hideOverlap: true }, markLine: si === 0 ? markLinePP(ppItem('x', 55, '55', C.yellow), ppItem('y', 55, 'PP 55', C.yellow)) : undefined })),
   });
   chart.on('click', (p) => {
     if (p.seriesType !== 'scatter') return;
@@ -3195,9 +3315,9 @@ function renderSource() {
   <div class="page-body">
     <div class="kpi-row">${kpis}</div>
     <div class="grid-12">
-      ${card('Baseline vs PM2.5', `X baseline µg/m³ · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-baseline"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : ''}</div>` })}
-      ${card('Jarak jalan vs PM2.5', `X meter (log) · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-distance"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.distance ? fmtR(corrDisplay.distance.r) : ''}</div>` })}
-      ${card('Lalu lintas vs PM2.5', `X kendaraan/jam · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-traffic"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : ''}</div>` })}
+      ${card('Baseline vs PM2.5', `X baseline µg/m³ · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-baseline"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.baseline ? fmtR(corrDisplay.baseline.r) : ''} · garis 55</div>` })}
+      ${card('Jarak jalan vs PM2.5', `X meter (log) · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-distance"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.distance ? fmtR(corrDisplay.distance.r) : ''} · garis 55</div>` })}
+      ${card('Lalu lintas vs PM2.5', `X kendaraan/jam · Y ${DATA.view.label} µg/m³`, `<div class="chart" id="scatter-traffic"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">r ${corrDisplay.traffic ? fmtR(corrDisplay.traffic.r) : ''} · garis 55</div>` })}
     </div>
     <div class="grid-12">
       ${card('Matriks korelasi polutan', 'Pearson · pooled hari-stasiun · 2024–2026', `<div class="chart" id="chart-pollutant-matrix"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">PM2.5 · PM10 · SO2 · NO2 · O3 · CO</div>' })}
@@ -3354,7 +3474,10 @@ function makeScatter(id, rows, xKey, logX, xName = xKey, yName = 'PM2.5 2026 (µ
         itemStyle: { color: (p) => ISLAND_COLORS[p.value[5]] || C.navy, borderColor: C.paper, borderWidth: 1 },
         emphasis: { itemStyle: { color: C.yellow, borderColor: C.navy } },
         label: { show: true, position: 'top', fontSize: 7.5, color: C.muted, distance: 4, formatter: (p) => (p.value[1] > 250 || p.value[0] > 400 || p.value[3] === 'KTG-02' || p.value[3] === 'KTG-01' || p.value[3] === 'SM2-01') ? p.value[3] : '' },
-        markLine: markLinePP(ppItem('y', 55, 'PP 55', C.yellow)),
+        labelLayout: { hideOverlap: true },
+        // Label garis PP dilepas dari kanvas (crowded 15 label stasiun);
+        // keterangan ambang ada di header kartu.
+        markLine: markLinePP({ ...ppItem('y', 55, 'PP 55', C.yellow), label: { show: false } }),
       },
       {
         type: 'line',
@@ -3377,7 +3500,7 @@ function makeScatter(id, rows, xKey, logX, xName = xKey, yName = 'PM2.5 2026 (µ
 
 /* ------------------------------------------------------------------ health */
 function renderHealth() {
-  const y = healthYears()[2];
+  const y = healthSpan();
   const scope = state.island === 'Semua' ? 'nasional' : state.island;
   const meta = `${DATA.view.label} · ${y.days} hari · ${scope} · kunjungan aktual`;
   const stations = healthStations();
@@ -3415,9 +3538,9 @@ function renderHealth() {
       ${card('Kunjungan per tahun', 'kasus · rentang sama', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">2024–2026</div>' })}
     </div>
     <div class="grid-12">
-      <section class="card span-12 h-320">
+      <section class="card span-12 h-460">
         <div class="card-head"><div class="card-title">PM2.5 dan kunjungan</div><div class="card-head-right"><div class="card-sub">dua panel · bukan dual axis</div></div></div>
-        <div class="card-body" style="display:flex;flex-direction:column"><div class="legend-note" style="padding:5px 12px 0">atas: PM2.5 µg/m³ · bawah: kunjungan harian</div><div style="height:128px;position:relative"><div class="chart" id="chart-pm-month"></div></div><div style="height:128px;position:relative"><div class="chart" id="chart-resp-month"></div></div></div>
+        <div class="card-body" style="display:flex;flex-direction:column"><div class="legend-note" style="padding:5px 12px 0">atas: PM2.5 µg/m³ · bawah: kunjungan harian</div><div style="height:128px;flex:0 0 128px;position:relative"><div class="chart" id="chart-pm-month"></div></div><div style="height:128px;flex:0 0 128px;position:relative"><div class="chart" id="chart-resp-month"></div></div></div>
       </section>
     </div>
     <div class="grid-12">
@@ -3469,7 +3592,7 @@ function afterHealth() {
 function makeObservedChart(id = 'chart-health', opts = {}) {
   const el = document.getElementById(id);
   if (!el) return null;
-  const y = healthYears()[2];
+  const y = healthSpan();
   const outcomes = DATA.health.outcomes;
   const actual = outcomes.map((o) => y.actual[o.key] || 0);
   const chart = makeChart(id, {
@@ -3484,7 +3607,7 @@ function makeObservedChart(id = 'chart-health', opts = {}) {
         return `<b>${outcomes[i].label}</b><br>${fmtInt(actual[i])} kunjungan<br><span style="opacity:.7">${esc(DATA.view.label)}</span>`;
       },
     },
-    xAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8.5, formatter: (v) => fmtInt(v) } },
+    xAxis: { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 8.5, hideOverlap: true, formatter: (v) => fmtInt(v) } },
     yAxis: { type: 'category', inverse: true, data: outcomes.map((o) => o.label), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: opts.yFont || 9.5, interval: 0 } },
     series: [
       { name: 'Kunjungan', type: 'bar', data: actual, barWidth: 11, itemStyle: { color: C.navy, borderRadius: [0, 3, 3, 0] }, label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => fmtInt(p.value) } },
@@ -3810,7 +3933,7 @@ function makeQcChart() {
   const total = rows.reduce((a, r) => a + r.value, 0) || 1;
   const chart = makeChart('chart-qc', {
     aria: { enabled: true },
-    grid: { left: 58, right: 24, top: 8, bottom: 24 },
+    grid: { left: 8, right: 24, top: 8, bottom: 24, containLabel: true },
     tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(p.name)}</b><br>${fmtInt(p.value)} baris · ${fmt(p.value / total * 100, 1)}%` },
     xAxis: { type: 'value', max: 100, axisLabel: { color: C.muted, fontSize: 8.5, formatter: '{value}%' }, splitLine: { lineStyle: { color: C.grid } } },
     yAxis: { type: 'category', inverse: true, data: rows.map((r) => r.name), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: 9 } },
@@ -4151,7 +4274,7 @@ function makeBarChart(id, rows, opts = {}) {
     grid,
     tooltip: { ...tooltipBase(), formatter: (p) => `<b>${esc(cats[p.dataIndex])}</b><br>${fmt(p.value, 1)}` },
     xAxis: horizontal
-      ? { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 9 }, axisLine: { show: false }, axisTick: { show: false } }
+      ? { type: 'value', splitLine: { lineStyle: { color: C.grid } }, axisLabel: { color: C.muted, fontSize: 9, hideOverlap: true }, axisLine: { show: false }, axisTick: { show: false } }
       : { type: 'category', data: cats, axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: opts.yFont || 9 } },
     yAxis: horizontal
       ? { type: 'category', inverse: true, data: cats, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: C.navy, fontSize: opts.yFont || 9, interval: 0 } }
@@ -4223,7 +4346,7 @@ function makeDayHourChart(id) {
         symbolSize: 7,
         data: [{ coord: [labels[peakIdx], vals[peakIdx]], value: vals[peakIdx] }],
         itemStyle: { color: C.terra, borderColor: '#fff', borderWidth: 1.4 },
-        label: { show: true, position: 'top', distance: 5, fontFamily: 'IBM Plex Mono', fontSize: 8, fontWeight: 600, color: C.navy, backgroundColor: 'rgba(255,255,255,.82)', padding: [2, 3], borderRadius: 3, formatter: `${labels[peakIdx]}:00 · ${fmt(vals[peakIdx], 1)}` },
+        label: { show: true, position: peakIdx >= 21 ? 'left' : 'top', distance: 5, fontFamily: 'IBM Plex Mono', fontSize: 8, fontWeight: 600, color: C.navy, backgroundColor: 'rgba(255,255,255,.82)', padding: [2, 3], borderRadius: 3, formatter: `${labels[peakIdx]}:00 · ${fmt(vals[peakIdx], 1)}` },
       } : undefined,
     }],
   });
@@ -4396,7 +4519,8 @@ function makeSiteClassChart(id) {
         barWidth: 8,
         itemStyle: { color: C.terra, borderRadius: [0, 4, 4, 0] },
         label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 8.5, color: C.navy, formatter: (p) => fmt(p.value, 1) },
-        markLine: markLinePP(ppItem('x', 55, 'PP 55', C.yellow)),
+        labelLayout: { hideOverlap: true },
+        markLine: markLinePP(ppItem('x', 55, 'PP 55', C.yellow, 'start')),
       },
     ],
   });
@@ -4781,7 +4905,9 @@ function makeMapTip(el) {
   const node = document.createElement('div');
   node.className = 'map-tip';
   node.hidden = true;
-  el.appendChild(node);
+  // Portal ke body: kartu map memakai backdrop-filter, yang membuat kartu menjadi
+  // containing block position:fixed -> tooltip bergeser jauh dari kursor.
+  document.body.appendChild(node);
   let timer = 0;
   let point = null;
   let html = '';
@@ -4798,6 +4924,13 @@ function makeMapTip(el) {
     y = Math.max(6, Math.min(window.innerHeight - h - 6, y));
     node.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
   };
+  const hide = () => {
+    clearTimeout(timer);
+    node.hidden = true;
+    html = '';
+  };
+  const onScroll = () => hide();
+  window.addEventListener('scroll', onScroll, true);
   return {
     show(next, nextPoint) {
       if (!next) return;
@@ -4816,10 +4949,11 @@ function makeMapTip(el) {
         position();
       }
     },
-    hide() {
+    hide,
+    destroy() {
+      window.removeEventListener('scroll', onScroll, true);
       clearTimeout(timer);
-      node.hidden = true;
-      html = '';
+      node.remove();
     },
   };
 }
@@ -5087,13 +5221,25 @@ function initTip() {
     if (html) tip.innerHTML = html; else tip.textContent = text;
     tip.hidden = false;
     const r = el.getBoundingClientRect();
-    const x = Math.min(window.innerWidth - 310, Math.max(8, r.left + r.width / 2 - 150));
-    const y = Math.min(window.innerHeight - 80, r.bottom + 8);
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    const pad = 8;
+    const x = Math.min(window.innerWidth - tw - pad, Math.max(pad, r.left + r.width / 2 - tw / 2));
+    // taruh di bawah pemicu; kalau ruang bawah kurang (mis. filterbar mobile menempel di bawah
+    // layar) balik ke atas supaya tooltip tidak terpotong
+    const below = window.innerHeight - r.bottom - pad;
+    let y;
+    if (below >= th) y = r.bottom + 6;
+    else if (r.top - th - 6 >= pad) y = r.top - th - 6;
+    else y = Math.max(pad, Math.min(window.innerHeight - th - pad, r.bottom + 6));
     tip.style.left = `${x}px`;
     tip.style.top = `${y}px`;
   };
   const hide = () => { current = null; tip.hidden = true; };
   document.addEventListener('mouseover', (e) => {
+    // di layar sentuh, Chromium tetap memancarkan mouseover tiruan setelah tap — kalau tidak
+    // dibatasi, tooltip muncul menutupi sheet filter setiap kali opsi rentang dipilih
+    if (!window.matchMedia('(hover: hover)').matches) return;
     const el = e.target.closest('[data-tip],[data-tip-html]');
     if (el) show(el);
   });
@@ -5103,7 +5249,9 @@ function initTip() {
   });
   document.addEventListener('focusin', (e) => {
     const el = e.target.closest('[data-tip],[data-tip-html]');
-    if (el) show(el);
+    // hanya muncul untuk fokus keyboard: tap di layar sentuh juga memicu focusin dan
+    // tooltip akan menutupi sheet filter
+    if (el && el.matches(':focus-visible')) show(el);
   });
   document.addEventListener('focusout', hide);
   window.addEventListener('scroll', hide, true);
