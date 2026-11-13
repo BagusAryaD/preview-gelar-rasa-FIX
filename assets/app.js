@@ -2260,7 +2260,7 @@ function renderOverview() {
     <div class="grid-55">
       <section class="card map-card h-420">
         <div class="card-head"><div class="card-title">Peta hotspot</div><div class="card-head-right"><div class="card-sub">ISPU · ${esc(shortDate(state.date))}</div>${provToggleHtml()}</div></div>
-        <div class="card-body"><div class="map" id="map-overview"></div><div class="map-legend" id="legend-overview"></div></div>
+        <div class="card-body"><div class="map" id="map-overview"></div><div class="map-ramp" id="ramp-overview">${provRampHtml()}</div><div class="map-legend" id="legend-overview"></div></div>
       </section>
       ${card(trendTitle, 'µg/m³ · bulanan · garis PP 55 & WHO 15', `<div class="chart" id="chart-trend"></div>`, { cls: 'h-420', right: `<div class="card-sub">P95 ${fmt(trend.p95, 1)} · ${esc(DATA.view.label)}</div>` })}
     </div>
@@ -3615,7 +3615,7 @@ function renderHealth() {
     <div class="grid-12">
       <section class="card map-card span-7 h-320">
         <div class="card-head"><div class="card-title">Peta kasus rumah sakit</div><div class="card-head-right"><div class="card-sub">${esc(DATA.view.label)}</div>${provToggleHtml()}</div></div>
-        <div class="card-body"><div class="map" id="map-health"></div><div class="map-legend" id="legend-health"></div></div>
+        <div class="card-body"><div class="map" id="map-health"></div><div class="map-ramp" id="ramp-health">${provRampHtml()}</div></div>
       </section>
       ${card('Kunjungan per 100 TT vs PM2.5', `X rata-rata PM2.5 · Y kunjungan/100 TT`, `<div class="chart" id="chart-health-scatter"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">µg/m³ · kasus</div>', period: 'range' })}
     </div>
@@ -3826,7 +3826,6 @@ function makeHealthCaseMap() {
   const el = document.getElementById('map-health');
   if (!el) return null;
   return makeMap('map-health', [], {
-    legend: provLegendHtml(false),
     islands: false,
     zoom: true,
     choropleth: { onProvince: (name) => { const spec = detailProvince(name); if (spec) openDetail(spec); } },
@@ -4755,21 +4754,31 @@ function provFillExpr(breaks) {
 function provLegendTitle() {
   const days = (DATA.hospitals.meta && DATA.hospitals.meta.days) || '';
   return state.provMetric === 'per100'
-    ? `Kunjungan per 100 tempat tidur · ${days} hari`
+    ? `Kunjungan per 100 TT · ${days} hari`
     : `Kasus RS mitra · ${days} hari`;
 }
 
-function provLegendHtml(withStations = true) {
-  const breaks = provBreaks();
-  const edges = [0, ...breaks];
-  const chips = edges.map((b, i) => {
-    const next = edges[i + 1];
-    const label = next == null ? `≥ ${fmtInt(b)}` : `${fmtInt(b)}–${fmtInt(next)}`;
-    return `<span class="chip"><i style="background:${PROV_RAMP[i]}"></i>${label}</span>`;
-  }).join('');
-  const tail = withStations ? '<div class="legend-sub">titik = stasiun · ISPU</div>' : '';
-  return `<div class="map-legend-title">${esc(provLegendTitle())}</div>
-    <div class="legend-chips">${chips}<span class="chip"><i style="background:${PROV_NODATA}"></i>tanpa RS mitra</span></div>${tail}`;
+/* Judul legenda dipecah dua baris sengaja: metrik di atas, periode di bawah.
+   Satu baris penuh akan terlipat di tengah frasa pada lebar panel 108px. */
+function provRampTitle() {
+  const days = (DATA.hospitals.meta && DATA.hospitals.meta.days) || '';
+  const metric = state.provMetric === 'per100' ? 'Kunjungan per 100 TT' : 'Kasus RS mitra';
+  return `<span>${esc(metric)}</span><span class="ramp-period">${days ? `${esc(String(days))} hari` : ''}</span>`;
+}
+
+/* Legenda spektrum peta provinsi (pojok kanan atas): 5 blok kuantil + dua angka ujung.
+   Angka ujung diambil dari data aktif, jadi ikut berubah saat metrik diganti.
+   Rincian tiap provinsi ada di tooltip, bukan ditulis ulang di legenda. */
+function provRampHtml() {
+  const vals = provRows().map(provValue).filter((v) => v != null && !Number.isNaN(v));
+  const lo = vals.length ? Math.min(...vals) : null;
+  const hi = vals.length ? Math.max(...vals) : null;
+  const edge = (v) => (v == null ? '—' : fmtInt(v));
+  const bar = PROV_RAMP.map((c) => `<i style="background:${c}"></i>`).join('');
+  return `<div class="ramp-title">${provRampTitle()}</div>
+    <div class="ramp-bar" role="img" aria-label="${esc(provLegendTitle())}: ${edge(lo)} sampai ${edge(hi)}">${bar}</div>
+    <div class="ramp-edges"><span>${edge(lo)}</span><span>${edge(hi)}</span></div>
+    <div class="ramp-nodata"><i style="background:${PROV_NODATA}"></i>tanpa RS mitra</div>`;
 }
 
 function provinceTip(name) {
@@ -4852,9 +4861,9 @@ function applyProvMetric() {
       m.__choropleth = { breaks };
     } catch (_) { /* disposed */ }
   });
-  ['legend-overview', 'legend-health'].forEach((id) => {
+  ['ramp-overview', 'ramp-health'].forEach((id) => {
     const el = document.getElementById(id);
-    if (el && el.dataset.kind === 'choro') el.innerHTML = provLegendHtml(el.dataset.dots === '1');
+    if (el) el.innerHTML = provRampHtml();
   });
 }
 
