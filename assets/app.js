@@ -812,6 +812,8 @@ function updateUrl() {
 
 /* ------------------------------------------------------------------ shell */
 function initShell() {
+  const footTeam = $('#foot-team');
+  if (footTeam) footTeam.textContent = TEAM.join('\n');
   const islandSel = $('#filter-island');
   islandSel.innerHTML = ['Semua', ...DATA.islands].map((x) => `<option value="${esc(x)}">${x === 'Semua' ? 'Semua pulau' : esc(x)}</option>`).join('');
   islandSel.value = state.island;
@@ -1048,6 +1050,11 @@ const PAGE_NAMES = {
   ringkasan: 'Ringkasan', waktu: 'Waktu', wilayah: 'Stasiun', sumber: 'Sumber',
   kesehatan: 'Kesehatan', jaringan: 'Jaringan', metodologi: 'Metodologi',
 };
+
+/* Anggota tim — satu sumber, dipakai kaki sidebar (desktop) & accordion "Tim"
+   di Metodologi (satu-satunya jalur yang terlihat di mobile).
+   Nama, bukan angka, jadi tidak lewat metrics.json. */
+const TEAM = ['Ariya Zuhdi Ismail', 'Bagus Arya Dwipangga', 'Fabian Naufal Lidani'];
 
 function renderBackChip() {
   const chip = $('#back-chip');
@@ -4133,12 +4140,11 @@ function defList(pairs) {
 function renderMethod() {
   const m = DATA.method;
   const d = m.data_quality;
-  const meta = `metrics.json · ${m.metrics_sha256.slice(0, 12)}… · ${m.generated_at}`;
+  const meta = `Definisi, aturan QC, dan batasan klaim`;
   return `${pageHead('Metodologi', meta, `<input class="method-search" id="method-search" type="search" placeholder="Cari definisi" aria-label="Cari definisi">`)}
   <div class="page-body">
     <section class="card method-card">
       <div class="method-scroll" id="method-scroll">
-        <div class="method-intro"><span class="pill">hash ${m.metrics_sha256.slice(0, 12)}…</span><span class="pill">${m.generated_at}</span><span class="card-sub">Semua angka di preview berasal dari file ini.</span></div>
         <details class="acc" open><summary><span class="chev">›</span>Definisi KPI</summary><div class="acc-body">${defList(m.definitions)}</div></details>
         <details class="acc"><summary><span class="chev">›</span>Aturan QC</summary><div class="acc-body">${defList(m.qc)}</div></details>
         <details class="acc"><summary><span class="chev">›</span>Data contract</summary><div class="acc-body">
@@ -4158,6 +4164,7 @@ function renderMethod() {
         <details class="acc"><summary><span class="chev">›</span>Batasan &amp; larangan klaim</summary><div class="acc-body"><ul>${m.limitations.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div></details>
         <details class="acc"><summary><span class="chev">›</span>Changelog</summary><div class="acc-body"><p><b>${esc(m.generated_at)}</b> — metrics.json hash <code>${m.metrics_sha256}</code>.</p><p>Status: ${STATUS_ORDER.map((s) => `${s} ${m.status_counts[s] || 0}`).join(' · ')}.</p></div></details>
         <details class="acc"><summary><span class="chev">›</span>Sitasi</summary><div class="acc-body"><ul>${m.citations.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div></details>
+        <details class="acc"><summary><span class="chev">›</span>Tim</summary><div class="acc-body"><ul>${TEAM.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div></details>
       </div>
     </section>
   </div>`;
