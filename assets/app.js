@@ -3612,8 +3612,8 @@ function renderHealth() {
       <span class="status-chip total">${esc(DATA.view.label)} · <b>${fmtInt(y.days)}</b> hari</span>
     </div>
     <div class="grid-12">
-      ${card('Distribusi kasus & dampak', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual</div>', period: 'range' })}
-      ${card('Kunjungan per tahun', 'kasus · rentang sama tiap tahun', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">2024–2026</div>', period: 'range' })}
+      ${card('Distribusi kasus & dampak', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">aktual</div>', period: 'range' })}
+      ${card('Kasus respirasi & kematian per tahun', 'kasus · rentang sama tiap tahun', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-6 h-340', right: '<div class="card-sub">kasus · 2024–2026</div>' })}
     </div>
     <div class="grid-12">
       <section class="card span-12 h-460">
@@ -3705,7 +3705,7 @@ function makeHealthYearChart() {
   const years = healthYears();
   const chart = makeChart('chart-health-year', {
     aria: { enabled: true },
-    grid: { left: 46, right: 12, top: 28, bottom: 26 },
+    grid: { left: 50, right: 12, top: 28, bottom: 26 },
     legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 6, textStyle: { fontSize: 9, color: C.muted } },
     tooltip: { ...tooltipBase(), trigger: 'axis' },
     xAxis: { type: 'category', data: years.map((r) => String(r.year)), axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 9 } },
@@ -4160,9 +4160,6 @@ function renderMethod() {
             <tr><td>Ambang 100</td><td class="num">${fmt(m.exceed.gt100_pct, 1)}%</td></tr>
           </tbody></table>
         </div></details>
-        <details class="acc"><summary><span class="chev">›</span>Alur data</summary><div class="acc-body"><ol>${m.pipeline.map((x) => `<li>${esc(x)}</li>`).join('')}</ol></div></details>
-        <details class="acc"><summary><span class="chev">›</span>Batasan &amp; larangan klaim</summary><div class="acc-body"><ul>${m.limitations.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div></details>
-        <details class="acc"><summary><span class="chev">›</span>Changelog</summary><div class="acc-body"><p><b>${esc(m.generated_at)}</b> — metrics.json hash <code>${m.metrics_sha256}</code>.</p><p>Status: ${STATUS_ORDER.map((s) => `${s} ${m.status_counts[s] || 0}`).join(' · ')}.</p></div></details>
         <details class="acc"><summary><span class="chev">›</span>Sitasi</summary><div class="acc-body"><ul>${m.citations.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div></details>
         <details class="acc"><summary><span class="chev">›</span>Tim</summary><div class="acc-body"><ul>${TEAM.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div></details>
       </div>

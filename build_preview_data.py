@@ -1123,9 +1123,12 @@ dump(
             "→ daily_station.csv + metrics.json → preview/data/*.json",
         ],
         "citations": [
-            "WHO. (2021). WHO global air quality guidelines: particulate matter (PM2.5 and PM10), ozone, nitrogen dioxide, sulfur dioxide and carbon monoxide.",
-            "KLHK. (2020). Peraturan Menteri Lingkungan Hidup dan Kehutanan No. 14 Tahun 2020 tentang Indeks Standar Pencemar Udara.",
-            "Gelar Rasa 2026. (2026). Booklet Case Study dan Handbook Preliminary Round.",
+            "Gelar Rasa. (2026). Booklet case study: Dashboard Analysis Gelar Rasa 2026. Panitia Gelar Rasa 2026.",
+            "Gelar Rasa. (2026). Handbook preliminary round: Dashboard Analysis Gelar Rasa 2026. Panitia Gelar Rasa 2026.",
+            "Kementerian Lingkungan Hidup dan Kehutanan. (2020). Peraturan Menteri Lingkungan Hidup dan Kehutanan Nomor P.14/MENLHK/SETJEN/KUM.1/7/2020 tentang Indeks Standar Pencemar Udara.",
+            "Kementerian Lingkungan Hidup dan Kehutanan. (2021). Peraturan Menteri Lingkungan Hidup dan Kehutanan Nomor 27 Tahun 2021 tentang Indeks Kualitas Lingkungan Hidup.",
+            "Presiden Republik Indonesia. (2021). Peraturan Pemerintah Republik Indonesia Nomor 22 Tahun 2021 tentang Penyelenggaraan Perlindungan dan Pengelolaan Lingkungan Hidup.",
+            "World Health Organization. (2021). WHO global air quality guidelines: Particulate matter (PM2.5 and PM10), ozone, nitrogen dioxide, sulfur dioxide and carbon monoxide. World Health Organization.",
         ],
     },
 )
