@@ -82,6 +82,7 @@ const state = {
 const DATA = {};
 let charts = [];
 let maps = [];
+let chartRO = null;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -183,6 +184,7 @@ async function boot() {
   applyRange();
   render();
   fit();
+  refreshChartsAfterFonts();
   window.addEventListener('resize', () => {
     fit();
     requestAnimationFrame(() => {
@@ -1916,6 +1918,7 @@ function detailNetworkStation(id) {
 
 /* ------------------------------------------------------------------ render */
 function disposeAll() {
+  if (chartRO) { try { chartRO.disconnect(); } catch (_) {} }
   charts.forEach((c) => { try { c.dispose(); } catch (_) {} });
   charts = [];
   maps.forEach((m) => {
@@ -2496,7 +2499,7 @@ function renderTime() {
       ${card('Perubahan PM2.5 harian', 'µg/m³', `<div class="chart" id="chart-daily"></div>`, { cls: 'span-12 h-460', right: '<div class="card-sub">µg/m³ · garis 15 / 55 / 100</div>', period: state.range === 'hari' ? `${daySpan(shiftIso(state.date, -14), shiftIso(state.date, 7))} hari sekitar ${shortDate(state.date)}` : 'full' })}
     </div>
     <div class="grid-12">
-      ${card('Siklus 24 jam', `µg/m³ · per jam · ${scopeLabel()} + tiap kelas lokasi`, `<div class="chart" id="chart-time-cycle"></div>`, { cls: 'span-8 h-320', right: `<div class="card-sub">${esc(diurnalNote())} · klik untuk rincian</div>`, period: 'range' })}
+      ${card('Siklus 24 jam', `µg/m³ · per jam · ${scopeLabel()} + tiap kelas lokasi`, `<div class="chart" id="chart-time-cycle"></div>`, { cls: 'span-8 h-320', right: `<div class="card-sub">${esc(diurnalNote())} · klik legenda untuk kelas lain · klik garis untuk rincian</div>`, period: 'range' })}
       ${card('Bulanan per pulau', 'µg/m³ · 2024–2026', `<div class="chart" id="chart-month-island"></div>`, { cls: 'span-4 h-320', right: '<div class="card-sub">µg/m³ · garis 55</div>', period: 'full' })}
     </div>
     <div class="grid-12">
@@ -4240,7 +4243,52 @@ function makeChart(id, option) {
     ...option,
   });
   charts.push(chart);
+  observeChartSize(el, chart);
   return chart;
+}
+
+/* Kontainer chart bisa berubah ukuran tanpa event `resize` jendela — mis. kepala
+   kartu membungkus jadi dua baris setelah font selesai dimuat. Tanpa ini kanvas
+   tetap seukuran lama dan label sumbu X terpotong. */
+function observeChartSize(el, chart) {
+  if (!window.ResizeObserver) return;
+  if (!chartRO) {
+    chartRO = new ResizeObserver((entries) => {
+      entries.forEach((entry) => {
+        const inst = entry.target.__chart;
+        if (!inst || inst.isDisposed()) return;
+        const w = Math.round(entry.contentRect.width);
+        const h = Math.round(entry.contentRect.height);
+        if (w < 2 || h < 2) return;
+        if (w === inst.getWidth() && h === inst.getHeight()) return;
+        requestAnimationFrame(() => {
+          try { if (!inst.isDisposed()) inst.resize(); } catch (_) {}
+        });
+      });
+    });
+  }
+  el.__chart = chart;
+  chartRO.observe(el);
+}
+
+/* Font web dimuat setelah render pertama. Saat itu metrik teks berubah,
+   kepala kartu bisa membungkus jadi dua baris, dan kanvas jadi tidak lagi
+   seukuran kontainernya — label sumbu X ikut terpotong. Setelah font siap,
+   paksa satu kali penyesuaian ukuran (yang menentukan letak label). */
+function refreshChartsAfterFonts() {
+  if (!document.fonts || !document.fonts.ready) return;
+  document.fonts.ready.then(() => {
+    requestAnimationFrame(() => {
+      charts.forEach((c) => {
+        try {
+          if (c.isDisposed()) return;
+          const el = c.getDom();
+          if (el && el.clientWidth === c.getWidth() && el.clientHeight === c.getHeight()) return;
+          c.resize();
+        } catch (_) {}
+      });
+    });
+  }).catch(() => {});
 }
 
 function monthLabel(m) {
@@ -4411,6 +4459,26 @@ function makeBarChart(id, rows, opts = {}) {
 
 /* ------------------------------------------------------- overview charts */
 
+/* Waktu: tampilkan Nasional + Lahan gambut + Koridor jalan sejak awal, sama
+   seperti Ringkasan. Kelas lain tetap muncul di legenda (diklik = nyala).
+   Rentang sumbu Y tetap dihitung dari semua kelas supaya tidak ada kurva yang
+   terpotong saat kelas lain dinyalakan. */
+function detailLegendSelected(classes) {
+  const on = new Set(['Traffic/Roadside', 'Peatland/Forest']);
+  const selected = {};
+  classes.forEach((c) => { selected[c.label] = on.has(c.cls); });
+  return selected;
+}
+
+/* Tinggi kepala plot untuk legenda. Ringkasan cukup satu baris; Waktu punya 6
+   entri sehingga membungkus jadi dua baris di kartu sempit. */
+function gridTopFor(id, detail) {
+  if (!detail) return 32;
+  const el = document.getElementById(id);
+  const w = el ? el.clientWidth : 0;
+  return w && w < 560 ? 46 : 32;
+}
+
 /* Kurva 24 jam — satu pembangun untuk Ringkasan & Waktu.
    Ringkasan: ringkas (lokasi terpilih + 2 pembanding).
    Waktu: lebih rinci (lokasi terpilih + seluruh kelas lokasi + klik rincian).
@@ -4433,10 +4501,22 @@ function makeCycleChart(id, opts = {}) {
   });
   if (!allVals.length) return null;
 
-  const lo = Math.min(...allVals);
-  const hi = Math.max(...allVals);
-  const yMax = Math.ceil((hi + 6) / 10) * 10;
-  const yMin = Math.max(0, Math.floor((lo - 6) / 10) * 10);
+  /* Rentang sumbu Y dihitung dari seri yang sedang tampil saja. Di Waktu,
+     default hanya Nasional + 2 kelas; kelas lain baru menambah rentang saat
+     dinyalakan lewat legenda (lihat legendselectchanged di bawah). */
+  const sel = detail ? detailLegendSelected(classes) : null;
+  const rangeFor = (vals) => {
+    const lo = Math.min(...vals);
+    const hi = Math.max(...vals);
+    return { min: Math.max(0, Math.floor((lo - 6) / 10) * 10), max: Math.ceil((hi + 6) / 10) * 10 };
+  };
+  const initialVals = detail
+    ? [curve.means, ...classes.filter((c) => sel[c.label] !== false).map((c) => c.vals)]
+      .flat().filter((v) => v != null)
+    : allVals;
+  const startRange = rangeFor(initialVals);
+  const yMin = startRange.min;
+  const yMax = startRange.max;
 
   const mk = (name, data, color, { width = 1.5, dots = false, z = 3, opacity = 1 } = {}) => ({
     name,
@@ -4475,8 +4555,15 @@ function makeCycleChart(id, opts = {}) {
 
   const chart = makeChart(id, {
     aria: { enabled: true },
-    grid: { left: 40, right: 14, top: 32, bottom: 22 },
-    legend: { top: 0, left: 0, itemWidth: 12, itemHeight: 7, itemGap: 9, icon: 'roundRect', textStyle: { fontSize: 8.5, color: C.muted } },
+    /* Legenda Waktu punya 6 entri; di kartu sempit ia membungkus jadi dua baris.
+       Beri ruang atas ekstra supaya label sumbu Y teratas tidak tertabrak. */
+    grid: { left: 40, right: 14, top: gridTopFor(id, detail), bottom: 22 },
+    legend: {
+      top: 0, left: 0, itemWidth: 12, itemHeight: 7, itemGap: 9, icon: 'roundRect', textStyle: { fontSize: 8.5, color: C.muted },
+      /* Waktu: default hanya Nasional + 2 kelas pembanding (sama seperti Ringkasan).
+         Kelas lain tetap ada di legenda, tinggal diklik untuk dinyalakan. */
+      ...(detail ? { selected: detailLegendSelected(classes) } : {}),
+    },
     tooltip: {
       ...tooltipBase(),
       trigger: 'axis',
@@ -4520,6 +4607,18 @@ function makeCycleChart(id, opts = {}) {
     pickByPixel(chart, document.getElementById(id), 'x', (i) => {
       const spec = detailHour(i);
       if (spec) openDetail(spec);
+    });
+    /* Saat kelas lain dinyalakan/dimatikan, skala Y ikut menyesuaikan supaya
+       kurva tidak gepeng di dasar plot. */
+    chart.on('legendselectchanged', (ev) => {
+      const on = ev.selected || {};
+      const vals = [curve.means];
+      classes.forEach((c) => { if (on[c.label] !== false) vals.push(c.vals); });
+      const flat = [];
+      vals.forEach((arr) => arr.forEach((v) => { if (v != null) flat.push(v); }));
+      if (!flat.length) return;
+      const r = rangeFor(flat);
+      chart.setOption({ yAxis: { min: r.min, max: r.max } });
     });
   }
   return chart;
