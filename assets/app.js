@@ -2266,7 +2266,7 @@ function renderOverview() {
     <div class="grid-12">
       ${card('Ranking pulau', `µg/m³ · ${DATA.view.label}`, `<div class="chart" id="chart-rank-island"></div>`, { cls: 'span-3 h-320' })}
       ${card('Siklus 24 jam', `µg/m³ · per jam · ${scopeLabel()}`, `<div class="chart" id="chart-cycle"></div>`, { cls: 'span-4 h-320', right: `<div class="card-sub">${esc(diurnalNote())}</div>`, period: 'range' })}
-      ${card('Kunjungan per kategori', `kasus · ${healthSpan().days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual</div>', period: 'range' })}
+      ${card('Distribusi kasus & dampak', `kasus · ${healthSpan().days} hari`, `<div class="chart" id="chart-ov-health"></div>`, { cls: 'span-5 h-320', right: '<div class="card-sub">aktual</div>', period: 'range' })}
     </div>
     <div class="grid-12">
       ${card(islandCompTitle, '% hari-stasiun', `<div class="chart" id="chart-ispu-island"></div>` + ispuStackLegend(), { cls: 'span-6 h-280', period: 'range' })}
@@ -3602,7 +3602,7 @@ function renderHealth() {
       <span class="status-chip total">${esc(DATA.view.label)} · <b>${fmtInt(y.days)}</b> hari</span>
     </div>
     <div class="grid-12">
-      ${card('Kunjungan per kategori', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual</div>', period: 'range' })}
+      ${card('Distribusi kasus & dampak', `kasus · ${y.days} hari`, `<div class="chart" id="chart-health"></div>`, { cls: 'span-7 h-340', right: '<div class="card-sub">aktual</div>', period: 'range' })}
       ${card('Kunjungan per tahun', 'kasus · rentang sama tiap tahun', `<div class="chart" id="chart-health-year"></div>`, { cls: 'span-5 h-340', right: '<div class="card-sub">2024–2026</div>', period: 'range' })}
     </div>
     <div class="grid-12">
@@ -4414,7 +4414,8 @@ function makeBarChart(id, rows, opts = {}) {
 /* Kurva 24 jam — satu pembangun untuk Ringkasan & Waktu.
    Ringkasan: ringkas (lokasi terpilih + 2 pembanding).
    Waktu: lebih rinci (lokasi terpilih + seluruh kelas lokasi + klik rincian).
-   Satuan µg/m³; garis putus-putus = rata-rata harian cakupan terpilih. */
+   Satuan µg/m³. Semua kurva padat; gaya putus-putus hanya untuk garis acuan
+   horizontal (rata-rata harian & baku mutu PP 55), sesuai catatan di kepala kartu. */
 function makeCycleChart(id, opts = {}) {
   const detail = !!opts.detail;
   const curve = diurnalCurve();
@@ -4437,23 +4438,23 @@ function makeCycleChart(id, opts = {}) {
   const yMax = Math.ceil((hi + 6) / 10) * 10;
   const yMin = Math.max(0, Math.floor((lo - 6) / 10) * 10);
 
-  const mk = (name, data, color, dashed, width) => ({
+  const mk = (name, data, color, { width = 1.5, dots = false, z = 3, opacity = 1 } = {}) => ({
     name,
     type: 'line',
     data,
     smooth: false,
     connectNulls: true,
-    showSymbol: !dashed,
+    showSymbol: dots,
     symbol: 'circle',
-    symbolSize: dashed ? 0 : 3.4,
-    lineStyle: { color, width, type: dashed ? [5, 4] : 'solid', opacity: dashed ? 0.9 : 1 },
+    symbolSize: dots ? 3.4 : 0,
+    lineStyle: { color, width, type: 'solid', opacity },
     itemStyle: { color, borderColor: C.paper, borderWidth: 1 },
-    z: dashed ? 2 : 4,
+    z,
   });
 
   const lines = [
-    mk(curve.label, curve.means, mainColor, false, 2.4),
-    ...compare.map((c) => mk(c.label, c.vals, DIURNAL_COLORS[c.cls] || C.grey, true, 1.5)),
+    mk(curve.label, curve.means, mainColor, { width: 2.4, dots: true, z: 4 }),
+    ...compare.map((c) => mk(c.label, c.vals, DIURNAL_COLORS[c.cls] || C.grey, { width: 1.5, z: 3 })),
   ];
 
   const dailyLine = curve.daily == null ? [] : [{
