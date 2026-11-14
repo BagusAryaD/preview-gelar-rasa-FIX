@@ -1939,7 +1939,6 @@ function render() {
   $$('.more-item[data-page]').forEach((a) => a.classList.toggle('active', a.dataset.page === state.page));
   syncFilters();
   syncRangeUi();
-  $('#foot-hash').textContent = `metrics ${DATA.meta.metrics_sha256.slice(0, 12)}…`;
   const footEnd = $('#foot-end');
   if (footEnd) footEnd.textContent = `Data hingga ${DATA.meta.periods.data_end}`;
   $('#page').innerHTML = renderPage();
